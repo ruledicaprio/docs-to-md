@@ -107,4 +107,43 @@ mod tests {
         // Sanity: the fingerprint is present but nothing resembling a name/number.
         assert!(json.contains("\"document_type\":\"P\""));
     }
+
+    #[test]
+    fn append_writes_one_json_object_per_line() {
+        let path =
+            std::env::temp_dir().join(format!("mlis-core-audit-test-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path); // in case a prior run left it behind
+
+        let first = AuditRecord::new(
+            sha256_hex(b"doc-1"),
+            "mrz-deterministic",
+            Some(true),
+            Some("P".into()),
+        );
+        let second = AuditRecord::new(sha256_hex(b"doc-2"), "llm", None, None);
+        append(&path, &first).expect("append first record");
+        append(&path, &second).expect("append second record");
+
+        let contents = std::fs::read_to_string(&path).expect("read audit log");
+        std::fs::remove_file(&path).ok();
+
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected one line per append, got: {contents:?}"
+        );
+
+        let parsed_first: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("first line is valid JSON");
+        let parsed_second: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("second line is valid JSON");
+
+        assert_eq!(parsed_first["sha256"], sha256_hex(b"doc-1"));
+        assert_eq!(parsed_first["method"], "mrz-deterministic");
+        assert_eq!(parsed_second["sha256"], sha256_hex(b"doc-2"));
+        assert_eq!(parsed_second["method"], "llm");
+        // No PII in the third field slots either — only fingerprint + metadata.
+        assert!(parsed_second.get("document_type").is_none());
+    }
 }

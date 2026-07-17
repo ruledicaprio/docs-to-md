@@ -21,7 +21,7 @@
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports, ID cards, and technical manuals in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline ships files to a local `docling-serve` OCR container (CPU), validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (GPU, Tier 2) when no valid MRZ exists. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
+Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline ships files to a local `docling-serve` OCR container (CPU), validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (GPU, Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
 
 ## 🔀 Pipeline
 
@@ -76,6 +76,8 @@ A public-domain Croatian passport specimen (from [`samples/`](samples/)) → det
 
 The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser: TD3 passports and TD1 ID cards, every check digit verified (7-3-1 weighting), with **checksum-verified OCR repair** — common misreads (`B`↔`8`, `O`↔`0`, filler runs read as `K`/`L`, dropped or hallucinated characters) are corrected by generating candidate readings and letting the composite check digit prove which one matches the printed zone. A valid composite is mathematical proof of a faithful read; a failed one flags a bad scan or a tampered document. When Tier 1 validates, the LLM never runs: extraction is instant, deterministic and hallucination-free.
 
+> **Date validity ≠ authenticity.** A valid MRZ checksum and self-consistent dates prove the extraction faithfully matches what's printed on the document — not that the document itself is genuine or unaltered. This is an OCR/data-integrity tool, not a forgery-detection tool.
+
 **[Try the live demo →](https://ruledicaprio.github.io/multi-level-id-strip/)** The same Rust code compiled to WebAssembly, with tesseract.js OCR, on a static GitHub Pages site. **No data is persistent on any server — there is no server.** Images are downscaled and processed entirely inside your browser tab; the extracted JSON is shown for 10 seconds with a copy button, then wiped.
 
 ## 🚀 Quickstart
@@ -96,7 +98,7 @@ pip install ./python                             # CPU-only (grpcio, pydantic, l
 pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 ```
 
-**3. Download the model** (~1 GB, not tracked in git):
+**3. Download the model** (~1 GB, not tracked in git — only needed for this local/CLI path; the Docker path in step 6 downloads it automatically):
 ```powershell
 curl -L -o qwen2.5-1.5b-instruct-q4_k_m.gguf `
   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
@@ -109,6 +111,9 @@ cd python; python generate_grpc.py; python -m inferer; cd ..
 
 **5. Run** (from the repo root):
 ```powershell
+# Preflight: checks OCR/inferer reachability and config before a real run
+cargo run -p mlis-cli -- doctor
+
 # CLI — one-shot extraction (binary `mlis`):
 cargo run -p mlis-cli -- samples/Croatian_passport_data_page.jpg
 
@@ -121,8 +126,8 @@ cargo run -p mlis-serve
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
-**Or bring the whole stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
-(OCR + warm inferer + web app; place the GGUF under `models/`).
+**6. Or bring the whole stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
+(OCR + warm inferer + web app; the `inferer` container auto-downloads and checksum-verifies the GGUF into `models/` on first start if it isn't already there).
 
 ### Configuration (environment)
 

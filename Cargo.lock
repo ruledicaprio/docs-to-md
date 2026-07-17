@@ -1579,8 +1579,9 @@ dependencies = [
 
 [[package]]
 name = "mlis-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
+ "base64",
  "mlis-core",
  "mlis-pipeline",
  "serde_json",
@@ -1589,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1600,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-pipeline"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "docling_rs",
@@ -1617,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-serve"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
@@ -1641,14 +1642,14 @@ dependencies = [
 
 [[package]]
 name = "mrz"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "mrz-wasm"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "mrz",
  "serde_json",
@@ -1780,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "ocr-daemon"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "image",
  "leptess",

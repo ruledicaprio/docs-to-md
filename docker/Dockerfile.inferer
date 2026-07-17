@@ -6,12 +6,14 @@ FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-pip \
+ && apt-get install -y --no-install-recommends python3 python3-pip curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY python/ /app/python/
 COPY proto/ /app/proto/
+COPY docker/entrypoint-inferer.sh /app/entrypoint-inferer.sh
+RUN chmod +x /app/entrypoint-inferer.sh
 
 RUN pip3 install --no-cache-dir --break-system-packages \
       "grpcio>=1.60" "grpcio-tools>=1.60" "pydantic>=2.5" "protobuf>=4.25" \
@@ -27,4 +29,5 @@ ENV MLIS_INFERER_BIND=0.0.0.0:50051
 EXPOSE 50051
 
 WORKDIR /app/python
+ENTRYPOINT ["/app/entrypoint-inferer.sh"]
 CMD ["python3", "-m", "inferer"]

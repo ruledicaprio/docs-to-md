@@ -13,16 +13,22 @@ services:
     ports:
       - "5001:5001"
 
-  # Tier-2 LLM: persistent warm inferer over gRPC. Mount the GGUF model dir.
+  # Tier-2 LLM: persistent warm inferer over gRPC. The GGUF is auto-downloaded
+  # and checksum-verified into ../models on first start if not already present
+  # (see docker/entrypoint-inferer.sh); the volume mount persists it across
+  # container recreation.
   inferer:
     build:
       context: ..
       dockerfile: docker/Dockerfile.inferer
     volumes:
-      - ../models:/models:ro
+      - ../models:/models
     environment:
       MODEL_PATH: /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
       MLIS_INFERER_BIND: 0.0.0.0:50051
+      # Override to fetch a different quant/model (must match MODEL_SHA256):
+      # MODEL_URL: https://huggingface.co/.../resolve/main/model.gguf
+      # MODEL_SHA256: <sha256 of the file above>
     ports:
       - "50051:50051"
     # GPU passthrough (optional; requires the NVIDIA container runtime):
