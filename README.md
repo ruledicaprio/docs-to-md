@@ -137,6 +137,7 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 | `MLIS_OCR_ENGINE` | `docling` | `docling` (all platforms) or `native` (Linux/WSL Tesseract, `--features native-ocr`) |
 | `DOCLING_URL` | `http://localhost:5001` | docling-serve OCR endpoint |
 | `MLIS_INFERER_ADDR` | `http://127.0.0.1:50051` | gRPC inferer endpoint |
+| `MLIS_MAX_QUEUE_DEPTH` | `4` | `mlis-serve`: reject uploads with 503 once this many Tier-2 requests are queued/in-flight |
 | `MLIS_TOKEN` | *(unset)* | require `Authorization: Bearer <token>`; **mandatory for non-loopback `BIND_ADDR`** |
 | `MLIS_TLS_CERT` / `MLIS_TLS_KEY` | *(unset)* | enable rustls TLS on `mlis-serve` |
 | `MLIS_AUDIT_LOG` | *(unset)* | append PII-free SHA-256 audit records (JSONL) |

@@ -7,6 +7,7 @@ run at load time so the first real request doesn't eat the initialization cost.
 """
 
 import os
+import threading
 
 
 class ModelLoader:
@@ -15,6 +16,11 @@ class ModelLoader:
             "MODEL_PATH", "./qwen2.5-1.5b-instruct-q4_k_m.gguf"
         )
         self._llm = None
+        # llama.cpp's Llama object isn't safe for concurrent calls (shared
+        # KV-cache/context state); the gRPC server's ThreadPoolExecutor can
+        # dispatch several RPCs at once, so this is the resource's own
+        # serialization, not just relying on callers to behave.
+        self._lock = threading.Lock()
 
     @property
     def loaded(self) -> bool:
@@ -42,25 +48,29 @@ class ModelLoader:
         """Run one deterministic (temperature 0) extraction, returning raw text."""
         if self._llm is None:
             self.load()
-        out = self._llm(
-            prompt,
-            max_tokens=500,
-            temperature=0.0,
-            stop=["<|im_end|>"],
-        )
+        with self._lock:
+            out = self._llm(
+                prompt,
+                max_tokens=500,
+                temperature=0.0,
+                stop=["<|im_end|>"],
+            )
         return out["choices"][0]["text"].strip()
 
     def generate_stream(self, prompt: str):
         """Same generation as `generate`, yielding raw text deltas as they're
         produced. Callers should strip only the accumulated text, not each
-        delta (whitespace tokens are meaningful mid-stream)."""
+        delta (whitespace tokens are meaningful mid-stream). Holds the lock
+        for the whole generation, so callers must fully consume (or close)
+        the generator rather than abandoning it mid-stream."""
         if self._llm is None:
             self.load()
-        for chunk in self._llm(
-            prompt,
-            max_tokens=500,
-            temperature=0.0,
-            stop=["<|im_end|>"],
-            stream=True,
-        ):
-            yield chunk["choices"][0]["text"]
+        with self._lock:
+            for chunk in self._llm(
+                prompt,
+                max_tokens=500,
+                temperature=0.0,
+                stop=["<|im_end|>"],
+                stream=True,
+            ):
+                yield chunk["choices"][0]["text"]

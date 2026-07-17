@@ -31,7 +31,9 @@ use mlis_core::Extraction;
 use serde_json::Value;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use tokio::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore};
 
 pub struct Pipeline {
     /// The OCR engine (docling-serve by default, or native on Linux/WSL).
@@ -44,9 +46,32 @@ pub struct Pipeline {
     encrypt_key: Option<[u8; 32]>,
     /// Consumer GPUs (e.g. GTX 970, 3.5 GB VRAM) fit exactly one GGUF model
     /// instance — LLM inference is serialized so concurrent callers queue
-    /// instead of OOM-ing. The warm inferer holds one model; this lock keeps
-    /// this process from firing overlapping requests at it.
-    llm_lock: Mutex<()>,
+    /// instead of racing the same `llama.cpp` context (also enforced,
+    /// defense-in-depth, on the Python side — see `python/inferer/loader.py`).
+    /// One permit = one concurrent GPU call.
+    llm_semaphore: Arc<Semaphore>,
+    /// Requests currently queued or in flight against the inferer. Lets a
+    /// caller (e.g. `mlis-serve`) reject new work fast under overload instead
+    /// of accepting it unboundedly and blocking. Incremented just before
+    /// queuing for `llm_semaphore`, decremented when the call completes.
+    llm_queue_depth: Arc<AtomicUsize>,
+}
+
+/// Bumps `llm_queue_depth` for the lifetime of the guard — from just before
+/// queuing for the semaphore permit until the Tier-2 call fully completes.
+struct QueueDepthGuard<'a>(&'a AtomicUsize);
+
+impl<'a> QueueDepthGuard<'a> {
+    fn enter(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for QueueDepthGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -139,7 +164,8 @@ impl Pipeline {
             inferer_addr: inferer_addr.into(),
             audit_log: None,
             encrypt_key: None,
-            llm_lock: Mutex::new(()),
+            llm_semaphore: Arc::new(Semaphore::new(1)),
+            llm_queue_depth: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -187,12 +213,24 @@ impl Pipeline {
         &self.inferer_addr
     }
 
+    /// Tier-2 requests currently queued or in flight against the inferer.
+    /// Compare against a configured cap to reject new work fast instead of
+    /// accepting it unboundedly.
+    pub fn llm_queue_depth(&self) -> usize {
+        self.llm_queue_depth.load(Ordering::Relaxed)
+    }
+
     /// Tier 2: call the persistent LLM inferer over gRPC and map its typed
     /// response onto the canonical [`Extraction`] schema. Serialized behind
-    /// `llm_lock` so this process never fires overlapping requests at the
-    /// single warm model.
+    /// `llm_semaphore` so this process never fires overlapping requests at
+    /// the single warm model.
     pub async fn extract_via_inferer(&self, markdown: &str) -> Result<Extraction, String> {
-        let _guard = self.llm_lock.lock().await;
+        let _depth = QueueDepthGuard::enter(&self.llm_queue_depth);
+        let _permit = self
+            .llm_semaphore
+            .acquire()
+            .await
+            .expect("llm_semaphore is never closed");
         let mut client = InfererClient::connect(self.inferer_addr.clone())
             .await
             .map_err(|e| format!("cannot reach inferer at {}: {e}", self.inferer_addr))?;
@@ -343,7 +381,12 @@ impl Pipeline {
         markdown: &str,
         tx: &mpsc::Sender<ProcessEvent>,
     ) -> Result<Extraction, String> {
-        let _guard = self.llm_lock.lock().await;
+        let _depth = QueueDepthGuard::enter(&self.llm_queue_depth);
+        let _permit = self
+            .llm_semaphore
+            .acquire()
+            .await
+            .expect("llm_semaphore is never closed");
         let mut client = InfererClient::connect(self.inferer_addr.clone())
             .await
             .map_err(|e| format!("cannot reach inferer at {}: {e}", self.inferer_addr))?;
@@ -360,7 +403,9 @@ impl Pipeline {
             match stream.message().await {
                 Ok(Some(chunk)) => {
                     if !chunk.delta.is_empty() {
-                        let _ = tx.send(ProcessEvent::Delta(chunk.delta)).await;
+                        // Best-effort UI progress — a stalled browser must
+                        // never extend how long this permit is held.
+                        let _ = tx.try_send(ProcessEvent::Delta(chunk.delta));
                     }
                     if chunk.done {
                         return match chunk.result {
@@ -663,6 +708,37 @@ mod tests {
         assert_eq!(extraction.surname.as_deref(), Some("DOE"));
         assert_eq!(extraction.document_number.as_deref(), Some("X1234567"));
         assert_eq!(extraction.extraction_method, "llm");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn llm_queue_depth_tracks_in_flight_calls_and_returns_to_zero() {
+        let (addr, server) = spawn_mock().await;
+        let pipeline = Pipeline::new(Box::new(DoclingEngine::new("http://localhost:5001")), addr);
+
+        assert_eq!(pipeline.llm_queue_depth(), 0, "idle before any call");
+
+        pipeline
+            .extract_via_inferer("P<UTO passport markdown")
+            .await
+            .expect("inferer extract");
+        assert_eq!(
+            pipeline.llm_queue_depth(),
+            0,
+            "guard releases after completion"
+        );
+
+        let (tx, _rx) = mpsc::channel(16);
+        pipeline
+            .extract_via_inferer_stream("P<UTO passport markdown", &tx)
+            .await
+            .expect("inferer extract_stream");
+        assert_eq!(
+            pipeline.llm_queue_depth(),
+            0,
+            "guard releases after streaming completion too"
+        );
+
         server.abort();
     }
 }

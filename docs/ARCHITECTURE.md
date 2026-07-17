@@ -100,6 +100,15 @@ Renamed `docs-to-md` → **`multi-level-id-strip` (mlis)** and delivered:
 * **Streaming inference** ✅ — `ExtractStream` gRPC server-streaming RPC (`proto/inferer.proto`) carries
   token deltas from the inferer to `mlis-serve`, which forwards them as SSE (`Pipeline::process_document_stream`,
   `crates/mlis-pipeline/src/lib.rs`) so the UI shows live progress during Tier 2 instead of freezing.
+* **Bounded, observable inference queue** ✅ — the single-GPU serialization primitive (`Pipeline`,
+  `crates/mlis-pipeline/src/lib.rs`) moved from a bare `Mutex<()>` to a `Semaphore` + `AtomicUsize`
+  queue-depth counter (`Pipeline::llm_queue_depth`), so `mlis-serve` can reject new uploads with 503
+  once `MLIS_MAX_QUEUE_DEPTH` requests are queued/in-flight instead of accepting them unboundedly.
+  A stalled browser connection no longer extends how long the GPU permit is held (delta forwarding is
+  now best-effort `try_send`). `python/inferer/loader.py` gained its own `threading.Lock` around model
+  calls as defense-in-depth — the Rust semaphore was previously the *only* thing preventing concurrent
+  calls into the shared `llama.cpp` context. Batched gRPC remains unimplemented; `python/bench_inferer.py`
+  is the harness to measure whether it's ever worth building.
 * **TD2 OCR-repair parity** — extend the checksum-verified repair variants to TD2 as thoroughly as TD1/TD3.
 * **Native OCR preprocessing** ✅ — DPI normalization, Tesseract-confidence-scored 0/90/180/270
   orientation correction, and projection-profile deskew, ahead of the existing Otsu binarization

@@ -32,6 +32,10 @@ struct AppState {
     keep_work: bool,
     /// Tier 3: when set, every request must present `Authorization: Bearer <token>`.
     token: Option<String>,
+    /// Reject new uploads with 503 once `Pipeline::llm_queue_depth()` reaches
+    /// this many queued/in-flight Tier-2 requests, instead of accepting them
+    /// unboundedly and leaving them to block behind the single-GPU semaphore.
+    max_queue_depth: usize,
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -92,6 +96,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = PathBuf::from(env::var("WORK_DIR").unwrap_or_else(|_| "work".into()));
     let keep_work = env::var("KEEP_WORK").is_ok();
     let token = env::var("MLIS_TOKEN").ok().filter(|s| !s.is_empty());
+    let max_queue_depth = env::var("MLIS_MAX_QUEUE_DEPTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
 
     // Refuse to expose PII processing wide-open: a non-loopback bind requires
     // an auth token (and, ideally, TLS in front).
@@ -118,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         work_dir,
         keep_work,
         token,
+        max_queue_depth,
     });
 
     let app = Router::new()
@@ -155,6 +164,17 @@ async fn extract(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    // Reject fast under overload rather than accepting the upload and
+    // leaving it to block behind the single-GPU inference semaphore. Tier-1
+    // (MRZ) requests never touch the queue, so this only ever costs a
+    // Tier-2-bound request a queued slot it wouldn't have gotten anyway.
+    if state.pipeline.llm_queue_depth() >= state.max_queue_depth {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "inference queue is full — try again shortly",
+        ));
+    }
+
     // Take the first uploaded file field.
     let (filename, data) = loop {
         let field = multipart
@@ -277,6 +297,36 @@ mod tests {
         assert!(startup_refusal("127.0.0.1:8080", &None).is_none());
     }
 
+    #[tokio::test]
+    async fn extract_rejects_with_503_when_queue_is_full() {
+        let pipeline = Pipeline::new(
+            Box::new(DoclingEngine::new("http://localhost:5001")),
+            "http://127.0.0.1:50051",
+        );
+        // max_queue_depth: 0 means "full" even with zero in-flight requests —
+        // exercises the rejection branch without needing a real inferer.
+        let state = Arc::new(AppState {
+            pipeline,
+            work_dir: PathBuf::from("work"),
+            keep_work: false,
+            token: None,
+            max_queue_depth: 0,
+        });
+        let app = Router::new()
+            .route("/api/extract", post(extract))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/extract")
+            .header("content-type", "multipart/form-data; boundary=X-BOUNDARY-X")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     /// A minimal `AppState` for exercising `require_auth` in isolation, without
     /// touching a real OCR engine or inferer (neither is called by the
     /// middleware itself).
@@ -290,6 +340,7 @@ mod tests {
             work_dir: PathBuf::from("work"),
             keep_work: false,
             token: token.map(str::to_string),
+            max_queue_depth: 4,
         })
     }
 

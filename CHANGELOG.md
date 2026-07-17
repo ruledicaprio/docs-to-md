@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-07-17
+
+Bounded, observable inference queue — plus a safety gap the redesign surfaced.
+
+### Added
+- **`MLIS_MAX_QUEUE_DEPTH`** (`mlis-serve`, default `4`): reject uploads with `503` once this many
+  Tier-2 requests are queued/in-flight, instead of accepting them unboundedly and blocking behind
+  the single-GPU semaphore. `Pipeline::llm_queue_depth()` exposes the live count.
+- **`python/bench_inferer.py`**: a minimal concurrency benchmark (mock-mode, in-process gRPC server)
+  reporting per-request latency and simulated rejection counts across candidate queue-depth caps —
+  the "benchmark first" groundwork for any future batched-gRPC work, which remains unimplemented
+  pending evidence it's needed.
+
+### Changed
+- The single-flight Tier-2 serialization primitive moved from a bare `Mutex<()>` to a `Semaphore` +
+  atomic depth counter (same one-concurrent-call guarantee); streaming `delta` events are now
+  forwarded best-effort (`try_send`) so a stalled browser connection no longer extends how long the
+  GPU permit is held.
+
+### Fixed
+- `python/inferer/loader.py`'s `Llama` instance had **no serialization of its own** — the Rust-side
+  lock was the only thing preventing the gRPC server's `ThreadPoolExecutor(max_workers=4)` from
+  making concurrent calls into the shared `llama.cpp` context, which risks corrupted output or a
+  crash, not just VRAM exhaustion. Added a `threading.Lock` around every model call as defense-in-depth.
+
 ## [0.5.0] — 2026-07-17
 
 Throughput & robustness: the Tier-2 UI freeze and the native OCR path's biggest accuracy gap.
