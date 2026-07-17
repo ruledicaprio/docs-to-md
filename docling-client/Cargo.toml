@@ -1,0 +1,8 @@
+[package]
+name = "docling-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pipeline = { path = "../pipeline" }
+tokio = { workspace = true }

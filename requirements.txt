@@ -1,0 +1,6 @@
+# Semantic extraction sidecar dependencies.
+#
+# For NVIDIA GPU acceleration on Windows, install the prebuilt CUDA 12.4 wheel
+# instead of building from source (see README "Getting Started"):
+#   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+llama-cpp-python>=0.3

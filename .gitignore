@@ -1,0 +1,15 @@
+# Rust
+target/
+
+# Python
+.venv/
+__pycache__/
+
+# Local LLM weights (~1 GB — download per README)
+*.gguf
+
+# Web app upload/working directory (may contain uploaded PII)
+work/
+
+# v0.3.0 work-in-progress drafts (not yet wired into the build)
+drafts/

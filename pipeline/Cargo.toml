@@ -1,0 +1,9 @@
+[package]
+name = "pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+docling_rs = { workspace = true }
+tokio = { workspace = true, features = ["process", "fs", "sync"] }
+serde_json = "1"

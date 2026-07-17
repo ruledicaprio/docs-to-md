@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docs-to-md — Document Extraction</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 60rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+  }
+  h1 { font-size: 1.4rem; }
+  .muted { opacity: .65; font-size: .9rem; }
+  form {
+    display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    padding: 1rem; border: 1px dashed color-mix(in srgb, currentColor 35%, transparent);
+    border-radius: .5rem; margin: 1rem 0;
+  }
+  button {
+    padding: .5rem 1.25rem; border-radius: .375rem; border: 1px solid currentColor;
+    background: none; color: inherit; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  #status { margin: .5rem 0; }
+  section { display: none; margin-top: 1.5rem; }
+  h2 { font-size: 1.05rem; }
+  pre {
+    padding: .75rem; border-radius: .375rem; overflow-x: auto;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .error { color: #c0392b; }
+</style>
+</head>
+<body>
+<h1>📄 docs-to-md</h1>
+<p class="muted">Air-gapped document pipeline: docling-serve OCR → Markdown → local Qwen 2.5 GGUF → structured JSON. Nothing leaves this machine.</p>
+
+<form id="form">
+  <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.bmp,.webp" required>
+  <button id="go" type="submit">Extract</button>
+  <span id="status" class="muted"></span>
+</form>
+
+<section id="json-section">
+  <h2>🧠 Extracted JSON</h2>
+  <pre id="json-out"></pre>
+</section>
+
+<section id="md-section">
+  <h2>📝 OCR Markdown</h2>
+  <pre id="md-out"></pre>
+</section>
+
+<script>
+const form = document.getElementById('form');
+const status = document.getElementById('status');
+const go = document.getElementById('go');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const file = document.getElementById('file').files[0];
+  if (!file) return;
+
+  go.disabled = true;
+  status.className = 'muted';
+  status.textContent = 'Processing… OCR + local LLM inference can take ~30 s.';
+  for (const id of ['json-section', 'md-section']) document.getElementById(id).style.display = 'none';
+
+  const body = new FormData();
+  body.append('file', file);
+
+  try {
+    const resp = await fetch('/api/extract', { method: 'POST', body });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+
+    if (data.extracted) {
+      document.getElementById('json-out').textContent = JSON.stringify(data.extracted, null, 2);
+      document.getElementById('json-section').style.display = 'block';
+    }
+    document.getElementById('md-out').textContent = data.markdown || '(empty)';
+    document.getElementById('md-section').style.display = 'block';
+
+    if (data.error) {
+      status.className = 'error';
+      status.textContent = 'LLM step failed: ' + data.error;
+    } else {
+      status.textContent = 'Done ✔';
+    }
+  } catch (err) {
+    status.className = 'error';
+    status.textContent = 'Failed: ' + err.message;
+  } finally {
+    go.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

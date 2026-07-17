@@ -1,0 +1,9 @@
+## REPUBLIKA HRVATSKA/REPUBLIC OF CROATIA/REPUBLIQUEDE CROATIE
+
+PUTOVNICA PASSPORT PASSEPORT
+
+<!-- image -->
+
+<!-- image -->
+
+P&lt;HRVSPECIMEN&lt;&lt;SPECIMEN&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt; 0070070071HRV8212258F1407019&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;06
