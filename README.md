@@ -5,10 +5,9 @@
 ![Tokio](https://img.shields.io/badge/Tokio-0B7261?style=flat&logo=rust&logoColor=white)
 ![Axum](https://img.shields.io/badge/Axum-000000?style=flat&logo=rust&logoColor=white)
 <!-- ML / inference -->
-![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
-![llama.cpp](https://img.shields.io/badge/llama.cpp-GGUF-555555?style=flat)
+![llama.cpp](https://img.shields.io/badge/llama.cpp-in--process-555555?style=flat)
 ![Qwen 2.5](https://img.shields.io/badge/Qwen%202.5-1.5B%20q4__k__m-6236FF?style=flat)
-![CUDA](https://img.shields.io/badge/CUDA-12.4-76B900?style=flat&logo=nvidia&logoColor=white)
+![Python](https://img.shields.io/badge/Python-legacy%20fallback-3776AB?style=flat&logo=python&logoColor=white)
 <!-- OCR / runtime -->
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
 ![docling-serve](https://img.shields.io/badge/docling--serve-OCR-FF6600?style=flat)
@@ -21,29 +20,39 @@
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline ships files to a local `docling-serve` OCR container (CPU), validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (GPU, Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
+Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline ships files to a local `docling-serve` OCR container, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. As of **v0.6.0** that fallback model runs **in-process** (`mlis-llm`, via `llama-cpp-2`) with no Python, no gRPC sidecar, and no Docker container required for it to work — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and the road to a single static binary. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
 
 ## 🔀 Pipeline
 
 ```mermaid
 flowchart LR
-    A[📄 Image / PDF] --> B{Entry point}
-    B -->|CLI| C["mlis (CLI)"]
-    B -->|upload page / API| D["mlis-serve<br/>(axum, :8080)"]
-    C --> E["mlis-pipeline crate<br/>process_document()"]
-    D --> E
-    E -->|"OcrEngine trait"| F["🐳 docling-serve (CPU)<br/>or native ocr-daemon<br/>(Tesseract, Linux/WSL)"]
-    F -->|Markdown| E
-    E --> T{"🔐 Tier 1<br/>ICAO 9303 checksums<br/>valid?"}
-    T -->|"yes — deterministic,<br/>LLM skipped"| H[📦 .md + .json artifacts]
-    T -->|"no — fallback,<br/>🔒 mutex"| G["🧠 Tier 2 · in-process<br/>llama.cpp (default)<br/>Qwen 2.5 GGUF"]
-    G -->|"live progress via SSE<br/>(mlis-serve only)"| D
-    G -->|strict JSON| H
+    subgraph entry["Entry points"]
+        A["📄 Image / PDF"]
+        A2["🌐 Browser demo"]
+    end
 
-    A2[🌐 Browser-only demo] -->|"tesseract.js OCR +<br/>mrz crate as WASM"| W["GitHub Pages<br/>no server at all"]
+    A --> B{"mlis-cli<br/>or mlis-serve"}
+    B --> P["⚙️ mlis-pipeline<br/>process_document()"]
+
+    P -->|"OcrEngine trait"| OCR["🐳 docling-serve<br/>or native ocr-daemon<br/>(Tesseract, Linux/WSL)"]
+    OCR -->|Markdown| P
+
+    P --> T1{"🔐 Tier 1<br/>ICAO 9303 checksum<br/>valid?"}
+    T1 -->|"yes — deterministic,<br/>Tier 2 skipped"| OUT["📦 .md + .json"]
+
+    T1 -->|"no — fallback"| T2{"🧠 Tier 2<br/>InferBackend trait"}
+    T2 -->|"native (default)"| NAT["mlis-llm crate<br/>in-process llama.cpp<br/>Qwen 2.5 GGUF · CPU"]
+    T2 -->|"grpc (legacy,<br/>one-release fallback)"| GRPC["🐍 Python sidecar<br/>llama-cpp-python · gRPC :50051"]
+    NAT --> J2["strict JSON"]
+    GRPC --> J2
+    J2 --> OUT
+
+    B -.->|"live SSE progress<br/>(mlis-serve only)"| T2
+
+    A2 -->|"tesseract.js OCR +<br/>mrz crate as WASM"| PAGES["GitHub Pages<br/>no server at all"]
 ```
 
-CPU handles OCR, GPU handles LLM inference — a deliberate split that keeps a 3.5 GB-VRAM card (GTX 970) from OOM-ing. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Tier 2 is deliberately pluggable (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs)): the **native** backend keeps everything in one process and one binary, which is the whole point of the road to v1.0.0's static musl build; the **gRPC** backend is what shipped through v0.5.x and stays available for one release as a safety net, with GPU acceleration for anyone who's already set up `llama-cpp-python` + CUDA. Full rationale — including why OCR still runs as a separate container by default — in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🖼️ Example
 
@@ -75,11 +84,17 @@ A public-domain Croatian passport specimen (from [`samples/`](samples/)) → det
 
 ## 🔐 Deterministic MRZ validation (Tier 1)
 
-The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser: TD3 passports and TD1 ID cards, every check digit verified (7-3-1 weighting), with **checksum-verified OCR repair** — common misreads (`B`↔`8`, `O`↔`0`, filler runs read as `K`/`L`, dropped or hallucinated characters) are corrected by generating candidate readings and letting the composite check digit prove which one matches the printed zone. A valid composite is mathematical proof of a faithful read; a failed one flags a bad scan or a tampered document. When Tier 1 validates, the LLM never runs: extraction is instant, deterministic and hallucination-free.
+The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser: TD1/TD2/TD3, every check digit verified (7-3-1 weighting), with **checksum-verified OCR repair** — common misreads (`B`↔`8`, `O`↔`0`, filler runs read as `K`/`L`, dropped or hallucinated characters) are corrected by generating candidate readings and letting the composite check digit prove which one matches the printed zone. A valid composite is mathematical proof of a faithful read; a failed one flags a bad scan or a tampered document. When Tier 1 validates, the LLM never runs: extraction is instant, deterministic and hallucination-free.
 
 > **Date validity ≠ authenticity.** A valid MRZ checksum and self-consistent dates prove the extraction faithfully matches what's printed on the document — not that the document itself is genuine or unaltered. This is an OCR/data-integrity tool, not a forgery-detection tool.
 
 **[Try the live demo →](https://ruledicaprio.github.io/multi-level-id-strip/)** The same Rust code compiled to WebAssembly, with tesseract.js OCR, on a static GitHub Pages site. **No data is persistent on any server — there is no server.** Images are downscaled and processed entirely inside your browser tab; the extracted JSON is shown for 10 seconds with a copy button, then wiped.
+
+## 🧠 In-process LLM fallback (Tier 2, v0.6.0)
+
+When no valid MRZ exists, Tier 2 asks a quantized Qwen 2.5 1.5B model to read the OCR Markdown and fill the same [`Extraction`](crates/mlis-core/src/lib.rs) schema Tier 1 produces. As of v0.6.0 that model runs **in the same process** as the CLI or web server — [`mlis-llm`](crates/mlis-llm/) loads the GGUF once via [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2), verifies its SHA-256 against a known-good hash before first use, and keeps it warm for the process lifetime. There's no sidecar to start, no gRPC port to open, and (once the pure-Rust OCR milestone lands) no Python anywhere in the default path.
+
+This is explicitly a probabilistic fallback, not a second source of truth: a 1.5B model reading garbled OCR of a document it's never seen the layout for will not match a deterministic checksum for accuracy, and the field-level parity harness (`crates/mlis-llm/tests/parity.rs`) exists to catch regressions in that fallback quality, not to promise perfection. That asymmetry is *why* Tier 1 exists and is tried first on every document.
 
 ## 🚀 Quickstart
 
@@ -116,8 +131,7 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 **4. Or bring the whole stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
 (OCR + web app; the `inferer` sidecar container auto-downloads and checksum-verifies the GGUF into
 `models/` on first start. The compose file pins `MLIS_INFERER=grpc` on `serve` for this release —
-drop that env var to use the in-process native backend there too, once you've dropped the `inferer`
-service.)
+drop that env var, and the `inferer` service entirely, to use the in-process native backend instead.)
 
 <details>
 <summary><b>Legacy: the Python gRPC sidecar</b> (feature <code>inferer-grpc</code>, kept as a fallback for one release)</summary>
@@ -143,7 +157,8 @@ CLI or `mlis-serve`.
 | `DOCLING_URL` | `http://localhost:5001` | docling-serve OCR endpoint |
 | `MLIS_INFERER` | `native` | Tier-2 backend: `native` (in-process llama.cpp, default) or `grpc` (legacy Python sidecar) |
 | `MLIS_MODEL_PATH` | `./qwen2.5-1.5b-instruct-q4_k_m.gguf` | GGUF path, `native` backend only |
-| `MLIS_MODEL_SHA256` / `MLIS_MODEL_SKIP_VERIFY` | *(built-in hash)* / *(unset)* | override the expected model checksum, or skip verification |
+| `MLIS_MODEL_N_CTX` | `2048` | context window (tokens), `native` backend only |
+| `MLIS_MODEL_SHA256` / `MLIS_MODEL_SKIP_VERIFY` | *(built-in hash)* / *(unset)* | override the expected model checksum, or skip verification (`native` backend) |
 | `MLIS_INFERER_ADDR` | `http://127.0.0.1:50051` | gRPC inferer endpoint, `grpc` backend only |
 | `MLIS_MAX_QUEUE_DEPTH` | `4` | `mlis-serve`: reject uploads with 503 once this many Tier-2 requests are queued/in-flight |
 | `MLIS_TOKEN` | *(unset)* | require `Authorization: Bearer <token>`; **mandatory for non-loopback `BIND_ADDR`** |
@@ -178,14 +193,14 @@ CLI or `mlis-serve`.
 
 ## 🔒 Security (Tier 3)
 
-Everything runs on loopback by default. `mlis-serve` **refuses a non-loopback bind unless `MLIS_TOKEN` is set**, then enforces `Authorization: Bearer <token>` on every request; set `MLIS_TLS_CERT`/`MLIS_TLS_KEY` for rustls TLS. Uploaded files and intermediate artifacts are deleted after each request. Two optional at-rest controls: `MLIS_AUDIT_LOG` appends a **PII-free** SHA-256 audit trail (fingerprint + method + timestamp, no names/numbers), and `MLIS_KEY` (base64 32-byte AES-256) encrypts the output JSON to `<input>.json.enc` — decrypt with `mlis decrypt`. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Everything runs on loopback by default. `mlis-serve` **refuses a non-loopback bind unless `MLIS_TOKEN` is set**, then enforces `Authorization: Bearer <token>` on every request; set `MLIS_TLS_CERT`/`MLIS_TLS_KEY` for rustls TLS. Uploaded files and intermediate artifacts are deleted after each request. Two optional at-rest controls: `MLIS_AUDIT_LOG` appends a **PII-free** SHA-256 audit trail (fingerprint + method + timestamp, no names/numbers), and `MLIS_KEY` (base64 32-byte AES-256) encrypts the output JSON to `<input>.json.enc` — decrypt with `mlis decrypt`. The native Tier-2 model itself is SHA-256-verified before use, so a tampered or substituted GGUF fails closed rather than running silently. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🙏 Acknowledgments
 
 A solo-authored project where the ideas, architecture and direction are the human's; the execution was AI-accelerated.
 
 - **Rusmir Skopljak** ([@ruledicaprio](https://github.com/ruledicaprio)) — creator, author, architecture & direction
-- **Claude Opus 4.8** (Anthropic) — orchestration & implementation
+- **Claude Opus 4.8 / Sonnet 5** (Anthropic) — orchestration & implementation
 - **DeepSeek v4 Pro** — advisory / architectural review
 
 Copyright and authorship rest with the human author; the AI tools are credited as assistants, not legal authors.

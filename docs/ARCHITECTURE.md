@@ -1,34 +1,54 @@
-# 🏛️ Architectural Manifest: multi-level-id-strip (mlis) — Air-Gapped Document Processing (v0.4.0)
+# 🏛️ Architectural Manifest: multi-level-id-strip (mlis) — Air-Gapped Document Processing (v0.6.0)
 
 ## 1. Executive Summary
 This repository houses the design and implementation of a localized, air-gapped machine learning architecture dedicated to processing complex identity documents (passports, ID cards) and multipage technical manuals. Engineered for high-stakes rental and compliance applications, the system automates data extraction while enforcing strict data privacy, zero recurring cloud API costs, and optimal local hardware utilization. By decoupling high-concurrency file orchestration from heavy machine learning workloads, the pipeline achieves a robust, production-ready foundation for sensitive Personally Identifiable Information (PII) processing.
 
-## 2. Architectural Foundation: Hybrid Polyglot Microservices
-The system utilizes a **Hybrid Polyglot Microservice Architecture**, strategically assigning tasks to the languages and environments best suited for them:
+As of **v0.6.0**, the LLM fallback tier runs **in-process** — no Python interpreter, no gRPC sidecar, no second container required for the default path. This is the first concrete step on the road to a single static `musl` binary (see [§9](#9-strategic-roadmap-v070--v100-the-road-to-a-single-static-binary)); everything else in this document describes what's true *today*, in this repo, right now.
 
-* **Deterministic MRZ Core (Rust library, zero deps):** The `mrz` crate implements ICAO 9303 TD3/TD1 parsing with full 7-3-1 check-digit validation and checksum-verified OCR repair. Zero runtime dependencies, so the identical code compiles natively for the pipeline and to WebAssembly for the public browser demo.
-* **Pipeline Core (Rust library):** The shared `pipeline` crate owns the end-to-end sequence (OCR → Markdown persistence → Tier 1 MRZ validation → Tier 2 LLM sidecar fallback → JSON) behind a single `process_document()` entry point. Both binaries are thin wrappers around it.
-* **Orchestration Layer (Rust CLI):** A lightweight asynchronous Rust client (`mlis-cli`, binary `mlis`) handles local file system I/O, CLI argument validation, and the `mlis decrypt` subcommand. Rust provides compile-time memory safety and a near-zero footprint, ensuring the orchestrator never becomes a system bottleneck.
-* **Web Front-End (Rust / axum):** A minimal axum server (`mlis-serve`) exposes the same pipeline as an upload page and a JSON API, with bearer-token auth and optional rustls TLS. LLM inference is serialized behind a mutex inside the pipeline core, so concurrent uploads queue instead of exhausting VRAM.
-* **OCR Engine (pluggable behind a trait):** An `OcrEngine` trait abstracts text extraction. The default `docling-serve` container (Layout Transformers, RapidOCR) runs on every platform; a native `ocr-daemon` engine (Tesseract + Leptonica, Otsu binarization) is available in-process on Linux/WSL, selected via `MLIS_OCR_ENGINE`.
-* **Semantic Extraction Layer (persistent gRPC inferer):** A Python sidecar (`python/inferer`) keeps the quantized `Qwen 2.5 1.5B` GGUF model warm and answers `Extract`/`Health` RPCs (`llama-cpp-python`, gRPC). The Rust pipeline calls it via tonic over loopback — replacing the old per-document `python extract_json.py` spawn, which cold-loaded the model on every fallback.
+## 2. Architectural Foundation: Two-Tier Extraction Behind a Pluggable Inference Seam
+The system is a **Rust-first pipeline with a deliberately narrow, swappable boundary** where probabilistic inference happens — everything else is deterministic Rust:
 
-## 3. Hardware Allocation & Performance Strategy
-A core design principle is the **strategic division of computational labor** to maximize the utility of consumer-grade hardware (e.g., NVIDIA GTX 970 with 3.5GB VRAM):
-1. The `docling-serve` container is explicitly bound to the physical CPU (via optimized `OMP_NUM_THREADS` and `MKL_NUM_THREADS` environment variables).
-2. This deliberate CPU offloading reserves 100% of the GPU’s high-speed VRAM for the local Large Language Model (LLM) inference phase.
-3. The result is a pipeline that processes OCR rapidly on the CPU while utilizing full GPU acceleration for semantic JSON extraction, eliminating out-of-memory (OOM) crashes and maximizing throughput.
+* **Deterministic MRZ Core (`mrz` crate, zero deps):** ICAO 9303 TD1/TD2/TD3 parsing with full 7-3-1 check-digit validation and checksum-verified OCR repair. Zero runtime dependencies, so the identical code compiles natively for the pipeline and to WebAssembly for the public browser demo.
+* **Pipeline Core (`mlis-pipeline` crate):** Owns the end-to-end sequence — OCR → Markdown persistence → Tier 1 MRZ validation → Tier 2 `InferBackend` fallback → JSON — behind a single `process_document()` entry point. Both binaries are thin wrappers around it. Concurrency control (a single-flight semaphore + an observable queue-depth counter) lives *here*, not in either backend, so the "one concurrent Tier-2 call" invariant holds no matter which backend is active.
+* **OCR Engine (pluggable behind a trait):** An `OcrEngine` trait abstracts text extraction. The default `docling-serve` container (Layout Transformers, RapidOCR) runs on every platform; a native `ocr-daemon` engine (Tesseract + Leptonica, DPI normalization, orientation correction, deskew, Otsu binarization) is available in-process on Linux/WSL, selected via `MLIS_OCR_ENGINE`.
+* **Inference Engine (pluggable behind a trait — the new part in v0.6.0):** An `InferBackend` trait ([`crates/mlis-pipeline/src/infer.rs`](../crates/mlis-pipeline/src/infer.rs)) abstracts *how* Tier 2 turns OCR Markdown into a structured `Extraction`. Two implementations exist today, selected at runtime via `MLIS_INFERER`:
+  * **`NativeInferer`** (feature `inferer-native`, **default**) — the [`mlis-llm`](../crates/mlis-llm/) crate loads the quantized Qwen 2.5 GGUF once via [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) (Rust bindings to `llama.cpp`), verifies its SHA-256 before first use, and keeps it warm in-process for the life of the CLI or web-server process. No sidecar, no network hop, no second language runtime.
+  * **`GrpcInferer`** (feature `inferer-grpc`, still default-enabled this release) — the v0.4.x/v0.5.x design: a persistent Python sidecar (`python/inferer`) keeps the same GGUF warm behind `llama-cpp-python` and answers `Extract`/`ExtractStream`/`Health` RPCs over gRPC (tonic ↔ grpcio). Kept as a fallback for **one release past `NativeInferer` shipping**, primarily for anyone who already has a CUDA-accelerated `llama-cpp-python` install; scheduled for deletion once the pure-Rust OCR milestone lands and the sidecar has no remaining reason to exist.
 
-## 4. Pipeline Execution Flow
+  Both implementations produce the identical `mlis_core::Extraction` schema, so nothing downstream — the CLI, the web app, the audit log, the encryption layer — knows or cares which one ran. Swapping the default from `grpc` to `native` in v0.6.0 required zero changes to `mlis-cli` beyond the doctor command's health check, and zero changes to `mlis-serve`'s request/response shape.
+* **Orchestration Layer (`mlis-cli`, binary `mlis`):** A lightweight asynchronous Rust client handling local file system I/O, CLI argument validation, `mlis doctor` (preflight: OCR + inferer reachability, config sanity), and `mlis decrypt`.
+* **Web Front-End (`mlis-serve`, axum):** Exposes the same pipeline as an upload page and a JSON API, with bearer-token auth and optional rustls TLS, and forwards Tier-2 token deltas to the browser over SSE so uploads show live progress instead of a frozen status line.
+
+## 3. Why the Inference Engine Became Pluggable
+Through v0.5.x, Tier 2 was hardwired to the gRPC sidecar: correct, but it meant every deployment needed a Python virtualenv (or a second Docker container) purely to keep an LLM warm that Rust is fully capable of running itself. That's a real cost for the target deployment shape — an offline, sellable, single-binary appliance — so v0.6.0 introduces the `InferBackend` trait specifically to let the *default* move to in-process inference without deleting the working gRPC path outright. The trait boundary is intentionally the only place backend choice matters:
+
+```rust
+#[async_trait]
+pub trait InferBackend: Send + Sync {
+    async fn extract(&self, markdown: &str) -> Result<Extraction, String>;
+    async fn extract_stream(&self, markdown: &str, tx: &mpsc::Sender<ProcessEvent>) -> Result<Extraction, String>;
+    fn describe(&self) -> String;
+    async fn health(&self) -> Result<String, String>;
+}
+```
+`NativeInferer::extract` and `extract_stream` run the actual `llama.cpp` generation loop inside `tokio::task::spawn_blocking` (it's CPU-bound, synchronous work — running it on the async executor would stall every other in-flight request), and forward streaming deltas back to the caller with non-blocking `try_send`, so a stalled browser connection can never extend how long the single Tier-2 concurrency permit is held. `LlamaBackend::init()` is a process-wide singleton in `llama.cpp` itself, so the model is loaded lazily on first use (`tokio::sync::OnceCell`) and never re-initialized.
+
+## 4. Hardware Allocation & Performance Strategy
+The native backend, as built in this repository, is **CPU-only** — that's a deliberate choice, not a current limitation to apologize for: it's what makes a self-contained musl binary possible at v1.0.0, and it's what lets the appliance target run on hardware with no discrete GPU at all. For deployments that already have GPU headroom and want to keep using it, the legacy gRPC backend still supports the CUDA-accelerated `llama-cpp-python` wheel, with the same OCR/LLM hardware split the project has used since v0.4.0:
+1. `docling-serve` is bound to the physical CPU (`OMP_NUM_THREADS`/`MKL_NUM_THREADS`), regardless of which Tier-2 backend is active.
+2. When the gRPC backend runs on GPU, that split keeps a small-VRAM card (e.g. GTX 970, 3.5 GB) from OOM-ing, since OCR never competes with the LLM for VRAM.
+3. When the native backend runs on CPU, there's no VRAM contention to design around in the first place — inference just costs wall-clock time (~1-2 minutes for a single-document extraction on modest hardware, per the field-accuracy harness runs in CI).
+
+## 5. Pipeline Execution Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
     participant B as mlis-cli / mlis-serve
-    participant P as mlis-pipeline crate
-    participant D as 🐳 OCR engine (docling / native, CPU)
-    participant L as 🧠 inferer (Qwen GGUF, gRPC, GPU)
+    participant P as mlis-pipeline (Pipeline)
+    participant D as 🐳 OCR engine (docling / native)
+    participant I as 🧠 InferBackend (native or grpc)
 
     U->>B: file path / multipart upload
     B->>P: process_document(path)
@@ -37,83 +57,64 @@ sequenceDiagram
     P->>P: write <input>.md
     P->>P: Tier 1 — ICAO 9303 MRZ checksum validation (TD1/TD2/TD3)
     alt MRZ composite check digit valid
-        P->>P: deterministic JSON (+ country names, date validity), LLM skipped
+        P->>P: deterministic JSON (+ country names, date validity), Tier 2 skipped
     else no MRZ / checksums failed
-        P->>L: Extract RPC (gRPC, serialized via mutex)
-        L->>L: warm GGUF, strict JSON prompt, Pydantic-validated
-        L-->>P: ExtractResponse
+        P->>P: acquire llm_semaphore permit (+ increment queue-depth)
+        P->>I: extract(markdown) / extract_stream(markdown, tx)
+        alt native (default)
+            I->>I: mlis-llm: warm GGUF (llama.cpp, in-process), ChatML prompt, greedy sample
+        else grpc (legacy)
+            I->>I: Extract RPC to Python sidecar (warm GGUF, Pydantic-validated)
+        end
+        I-->>P: Extraction (or streamed deltas, then final result)
+        P->>P: release permit (- decrement queue-depth)
     end
     P->>P: persist JSON (AES-256-GCM if MLIS_KEY) + PII-free audit record
     P-->>B: PipelineResult { markdown, extracted, mrz, method }
-    B-->>U: console output / JSON response
+    B-->>U: console output / JSON response (SSE deltas if streaming)
 ```
 
 ### CLI (`mlis-cli`, binary `mlis`)
-1. **Ingestion:** The user passes a local image or PDF path to the Rust binary (`cargo run -p mlis-cli -- <file>`).
-2. **Validation:** Rust verifies file existence, then hands off to the pipeline core, which auto-generates the target `.md` output path.
-3. **OCR Processing:** The active `OcrEngine` (docling-serve or the native Tesseract engine) returns structured Markdown.
-4. **Persistence:** The extracted Markdown is written to the local disk.
-5. **Inference Trigger (Tier 2):** If no checksum-valid MRZ exists, the pipeline sends an `Extract` gRPC request to the warm inferer (`MLIS_INFERER_ADDR`), serialized behind a mutex.
-6. **JSON Generation:** The inferer runs the already-loaded GGUF model under a strict prompt, validates via Pydantic, and returns the typed response; the pipeline writes a `.json` (or encrypted `.json.enc`) adjacent to the source and appends an audit record.
+1. **Ingestion:** the user passes a local image or PDF path to the Rust binary (`cargo run -p mlis-cli -- <file>`).
+2. **Validation:** Rust verifies file existence, then hands off to `Pipeline::process_document`, which auto-generates the target `.md` output path.
+3. **OCR:** the active `OcrEngine` (docling-serve or the native Tesseract engine) returns structured Markdown.
+4. **Persistence:** the Markdown is written to disk.
+5. **Tier 2 (if triggered):** the active `InferBackend` — native by default — runs, serialized behind `Pipeline`'s semaphore.
+6. **JSON generation:** the backend returns a typed `Extraction`; the pipeline writes a `.json` (or encrypted `.json.enc`) adjacent to the source and appends an audit record.
+7. **`mlis doctor`:** preflight — checks OCR reachability, then calls `Pipeline::infer_health()`, which for the native backend confirms the model file exists and SHA-256-verifies it (or reports the skip), and for the gRPC backend confirms the sidecar answers `Health`.
 
 ### Web App (`mlis-serve`)
 1. **GET /** serves an embedded, dependency-free upload page.
-2. **POST /api/extract** accepts a multipart file upload (≤ 20 MB), stores it under an ephemeral `work/` directory, and invokes the same pipeline core.
-3. The response bundles both artifacts: `{ "filename", "markdown", "extracted", "method", "mrz", "error" }`. An LLM failure degrades gracefully — the OCR Markdown is still returned alongside the error.
-4. **Auth:** when `MLIS_TOKEN` is set, every request needs `Authorization: Bearer <token>`; a non-loopback `BIND_ADDR` without a token is refused at startup. Optional rustls TLS via `MLIS_TLS_CERT`/`MLIS_TLS_KEY`.
-5. **PII hygiene:** working files are deleted after each request (set `KEEP_WORK=1` to retain them for debugging).
-6. Configuration via environment: `BIND_ADDR`, `MLIS_OCR_ENGINE`, `DOCLING_URL`, `MLIS_INFERER_ADDR`, `MLIS_TOKEN`, `MLIS_AUDIT_LOG`, `MLIS_KEY`, `WORK_DIR`.
+2. **POST /api/extract** accepts a multipart file upload (≤ 20 MB), stores it under an ephemeral `work/` directory, and invokes the same pipeline core — as an SSE stream, so Tier-2 token deltas reach the browser in real time instead of behind a frozen status line.
+3. The terminal event bundles both artifacts: `{ "filename", "markdown", "extracted", "method", "mrz", "error" }`. A Tier-2 failure degrades gracefully — the OCR Markdown is still returned alongside the error.
+4. **Overload protection:** `MLIS_MAX_QUEUE_DEPTH` (default 4) rejects new uploads with `503` once that many Tier-2 requests are queued/in-flight, instead of accepting them unboundedly and blocking behind the single-flight semaphore.
+5. **Auth:** when `MLIS_TOKEN` is set, every request needs `Authorization: Bearer <token>`; a non-loopback `BIND_ADDR` without a token is refused at startup. Optional rustls TLS via `MLIS_TLS_CERT`/`MLIS_TLS_KEY`.
+6. **PII hygiene:** working files are deleted after each request (`KEEP_WORK=1` retains them for debugging).
+7. Configuration via environment: `BIND_ADDR`, `MLIS_OCR_ENGINE`, `DOCLING_URL`, `MLIS_INFERER`, `MLIS_MODEL_PATH`, `MLIS_INFERER_ADDR`, `MLIS_MAX_QUEUE_DEPTH`, `MLIS_TOKEN`, `MLIS_AUDIT_LOG`, `MLIS_KEY`, `WORK_DIR`.
 
-## 5. Security & Compliance Posture
+## 6. Security & Compliance Posture
 Designed for environments with stringent regulatory requirements (e.g., GDPR), the pipeline enforces a **Zero-Telemetry, Air-Gapped Posture**:
-* **No External Network Calls:** All processing, from OCR to LLM inference, occurs strictly within the local loopback interface (`localhost`). No PII ever leaves the host machine.
-* **Loopback by Default:** The web app binds to `127.0.0.1` unless explicitly overridden. It ships **without authentication** — if you expose it beyond loopback (`BIND_ADDR=0.0.0.0:8080`), place a reverse proxy with TLS and authentication in front of it. It processes identity documents; treat it accordingly.
-* **Dependency Isolation:** The use of a Python virtual environment (`.venv`) and Docker containers prevents dependency conflicts and limits the blast radius of any potential supply-chain vulnerabilities.
-* **Deterministic Fallback Planning:** Recognizing the probabilistic nature of small LLMs, the architecture is designed to transition toward deterministic validation for critical identity fields (see Roadmap).
+* **No External Network Calls:** all processing, from OCR to LLM inference, occurs strictly within the local loopback interface (`localhost`) or, for the native backend, entirely inside the same process with no network call at all. No PII ever leaves the host machine.
+* **Loopback by Default:** the web app binds to `127.0.0.1` unless explicitly overridden. It ships **without authentication** — if you expose it beyond loopback (`BIND_ADDR=0.0.0.0:8080`), `mlis-serve` refuses to start unless `MLIS_TOKEN` is set. It processes identity documents; treat it accordingly.
+* **Model integrity:** the native backend SHA-256-verifies the GGUF against a known-good hash before first use (`MLIS_MODEL_SHA256` to pin a different build, `MLIS_MODEL_SKIP_VERIFY=1` to bypass for local development) — a tampered or substituted model file fails closed instead of silently running.
+* **Dependency isolation:** the legacy gRPC backend's Python virtual environment (`.venv`) and Docker containers limit the blast radius of any supply-chain vulnerability in that path; the native backend removes that surface for the default deployment shape entirely.
+* **Deterministic-first design:** Tier 1 is tried before Tier 2 on every document specifically because MRZ checksum validation is provably correct where LLM extraction is only probably correct — see [§7](#7-known-limitations--what-tier-2-accuracy-actually-looks-like).
 
-## 6. Operational Validation
-The pipeline has been successfully tested against real-world specimen documents (public-domain samples in [`../samples/`](../samples/)), including Croatian and Serbian passports.
-* **Multilingual Handling:** The OCR engine flawlessly captured complex, multi-lingual layouts, processing both Latin and Cyrillic scripts (e.g., `MUP R SRBIJE`, `BEOGRAD`).
-* **Data Extraction:** Key PII fields (Surname, Given Names, Date of Birth, Nationality) and the Machine Readable Zone (MRZ) were successfully isolated from the raw Markdown.
-* **Inference Efficiency:** End-to-end processing, including model loading and JSON generation, completes in approximately 25 seconds on local hardware, proving viability for batch-processing workflows.
+## 7. Known Limitations & What Tier-2 Accuracy Actually Looks Like
+The 1.5B model is small enough to run comfortably on CPU, and that comes with a real accuracy ceiling worth stating plainly rather than glossing over. The field-level parity harness (`crates/mlis-llm/tests/parity.rs`, run against real specimen documents in `samples/`) measured a **~45% per-field exact-match rate** against deterministic-MRZ ground truth (date-format normalized) on the current model. It's strong on well-formed front-page passport/ID layouts and materially worse on rear-side ID cards and heavily garbled MRZ blocks — exactly the failure mode Tier 1 exists to route around. The harness asserts a 25%-floor regression guard (catching a broken prompt or a JSON-repair bug), not an accuracy target, and is deliberately not gated at a higher bar: raising the bar is a model/prompt-quality project, not a correctness one, and belongs in a future milestone rather than blocking this one.
 
-## 7. v0.3.0 — Hybrid Deterministic Extraction (delivered)
-* **Tier 1 (Pure Rust MRZ Parser)** ✅ — the `mrz` crate performs native ICAO 9303 checksum validation (TD3 + TD1), mathematically verifying the MRZ, Document Number, and Dates. Checksum-verified OCR repair corrects lookalike misreads (`B`↔`8`, `O`↔`0`, K/L filler runs, dropped/hallucinated characters) with the composite check digit as the oracle, eliminating LLM hallucinations on critical fields.
-* **Tier 2 (LLM Semantic Fallback)** ✅ — the local Qwen 2.5 model now runs only when no checksum-valid MRZ exists: unstructured documents (technical manuals) or damaged/low-quality scans.
-* **Client-Side Demo (WASM)** ✅ — the same `mrz` crate compiled to WebAssembly powers a static GitHub Pages demo (tesseract.js OCR, in-browser downscaling, ephemeral 10-second JSON display). No backend exists; no data is persistent on any server.
+## 8. Operational Validation
+The pipeline has been tested against real-world specimen documents (public-domain samples in [`../samples/`](../samples/)) spanning Croatian, Serbian, Estonian, Slovenian, and other passports/ID cards.
+* **Multilingual handling:** the OCR engine captures complex, multi-lingual layouts across Latin and Cyrillic scripts.
+* **Tier 1 coverage:** TD1/TD2/TD3 MRZ formats, with checksum-verified OCR repair correcting common lookalike misreads before validation.
+* **Tier 2 coverage:** the native and gRPC backends are verified to produce byte-identical `Extraction` schemas via the shared `mlis-core::Extraction` type; the native backend's real-model behavior is covered by an ignored-by-default e2e smoke test and the parity harness (both runnable in CI via the opt-in `native-llm` workflow job).
 
-## 8. v0.4.0 — Rebrand + Restructure + Tier 3 (delivered)
-Renamed `docs-to-md` → **`multi-level-id-strip` (mlis)** and delivered:
-* **TD2 support + date plausibility** ✅ — the `mrz` crate now parses TD1/TD2/TD3, was split into
-  `checksum`/`parser`/`dates`/`countries` modules, exposes ISO/ICAO country names, and computes a
-  clock-free `DateValidity` (expiry-vs-today, DOB-before-expiry) distinct from the check digits.
-* **Persistent gRPC inferer** ✅ — the per-document `extract_json.py` spawn became a warm Python
-  sidecar (`python/inferer`) reached over gRPC (tonic ↔ grpcio), fixing the cold-reload penalty.
-* **Pluggable OCR** ✅ — an `OcrEngine` trait with docling-serve (default, all platforms) and a
-  native Tesseract+Leptonica engine (`ocr-daemon`, Linux/WSL, `--features native-ocr`).
-* **Tier 3 (Cryptographic Security)** ✅ — SHA-256 PII-free audit trail (`MLIS_AUDIT_LOG`),
-  AES-256-GCM output encryption (`MLIS_KEY` → `.json.enc`, `mlis decrypt`), bearer-token auth with a
-  hard refusal to bind non-loopback without a token, and optional rustls TLS.
-* **Canonical schema** ✅ — one `mlis-core::Extraction` shape shared by all tiers and the WASM demo.
-
-## 9. Strategic Roadmap: v0.5.0
-* **Streaming inference** ✅ — `ExtractStream` gRPC server-streaming RPC (`proto/inferer.proto`) carries
-  token deltas from the inferer to `mlis-serve`, which forwards them as SSE (`Pipeline::process_document_stream`,
-  `crates/mlis-pipeline/src/lib.rs`) so the UI shows live progress during Tier 2 instead of freezing.
-* **Bounded, observable inference queue** ✅ — the single-GPU serialization primitive (`Pipeline`,
-  `crates/mlis-pipeline/src/lib.rs`) moved from a bare `Mutex<()>` to a `Semaphore` + `AtomicUsize`
-  queue-depth counter (`Pipeline::llm_queue_depth`), so `mlis-serve` can reject new uploads with 503
-  once `MLIS_MAX_QUEUE_DEPTH` requests are queued/in-flight instead of accepting them unboundedly.
-  A stalled browser connection no longer extends how long the GPU permit is held (delta forwarding is
-  now best-effort `try_send`). `python/inferer/loader.py` gained its own `threading.Lock` around model
-  calls as defense-in-depth — the Rust semaphore was previously the *only* thing preventing concurrent
-  calls into the shared `llama.cpp` context. Batched gRPC remains unimplemented; `python/bench_inferer.py`
-  is the harness to measure whether it's ever worth building.
-* **TD2 OCR-repair parity** — extend the checksum-verified repair variants to TD2 as thoroughly as TD1/TD3.
-* **Native OCR preprocessing** ✅ — DPI normalization, Tesseract-confidence-scored 0/90/180/270
-  orientation correction, and projection-profile deskew, ahead of the existing Otsu binarization
-  (`crates/ocr-daemon/src/preprocess.rs`).
-* **Bridge integration test in CI** — stand up the real inferer against a tiny fixture model.
+## 9. Strategic Roadmap: v0.7.0 → v1.0.0 — The Road to a Single Static Binary
+v0.6.0 removed the *default* Python dependency from Tier 2. The remaining milestones on the way to a sellable, air-gapped, single static `musl` binary:
+* **v0.7.0 — Pure-Rust OCR.** Replace the default `docling-serve` container dependency with a native Rust OCR path (evaluating `ocrs`/`rten`), so Tier 1 no longer needs Docker either. Once this lands, `python/inferer` and `proto/inferer.proto` are deleted outright — the gRPC backend was always meant to be a one-release bridge, not a permanent second implementation.
+* **v0.8.0 — Offline cryptographic licensing.** Ed25519-signed license files for air-gapped enterprise distribution, so the binary can be sold and metered without ever phoning home.
+* **v0.9.0 — PII memory hardening + fuzzing.** `zeroize`/`ZeroizeOnDrop` on in-memory PII structures to shrink the window a swap file or crash dump could leak identity data; fuzz-testing the ingest path (image/PDF parsing, OCR Markdown parsing, MRZ repair) for the untrusted-input surface a sellable product needs hardened.
+* **v1.0.0 — Static musl release.** A single `x86_64-unknown-linux-musl` binary bundling the pipeline, native OCR, native LLM inference, and licensing — the "copy one file to an air-gapped machine" deployment model the whole roadmap has been building toward.
 
 ## 10. Getting Started
 See the [README quickstart](../README.md#-quickstart).
