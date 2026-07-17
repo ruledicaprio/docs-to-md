@@ -4,6 +4,8 @@ Carried over from the original `extract_json.py` — a strict system prompt that
 forbids markdown fences and demands raw JSON with `null` for missing fields.
 """
 
+import html
+
 SYSTEM = (
     "You are an expert, highly accurate identity document parser. Your task is "
     "to extract specific fields from the provided OCR Markdown text into a "
@@ -30,6 +32,11 @@ FIELDS = [
 def build_prompt(md_content: str) -> str:
     """Build the Qwen2.5 ChatML prompt for one document's OCR Markdown."""
     fields = ", ".join(FIELDS)
+    # docling renders MRZ filler chevrons as HTML entities (`<` -> `&lt;`) in its
+    # Markdown output. Left escaped, the model echoes `&lt;` verbatim into
+    # fields like mrz_line instead of the literal `<` that was printed on the
+    # document, so unescape before the model ever sees the text.
+    md_content = html.unescape(md_content)
     return (
         "<|im_start|>system\n"
         f"{SYSTEM}\n"

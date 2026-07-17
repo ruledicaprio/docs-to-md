@@ -36,8 +36,31 @@ fn api_error(status: StatusCode, msg: impl std::fmt::Display) -> ApiError {
     (status, Json(json!({ "error": msg.to_string() })))
 }
 
+/// Whether `addr` (a `host:port`, `[ipv6]:port`, or bare host) names a loopback
+/// interface. Compares the parsed host exactly rather than a string prefix, so
+/// `"127.0.0.1.evil.example:8080"` isn't mistaken for `127.0.0.1`.
 fn is_loopback(addr: &str) -> bool {
-    addr.starts_with("127.0.0.1") || addr.starts_with("localhost") || addr.starts_with("[::1]")
+    let host = if let Some(rest) = addr.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        addr.rsplit_once(':').map_or(addr, |(host, _)| host)
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// Tier-3 startup gate: refuse to expose PII processing on a non-loopback bind
+/// without a bearer token configured. Returns the refusal message the process
+/// should exit with, or `None` when it's safe to serve.
+fn startup_refusal(bind_addr: &str, token: &Option<String>) -> Option<String> {
+    if !is_loopback(bind_addr) && token.is_none() {
+        Some(format!(
+            "refusing to bind non-loopback ({bind_addr}) without MLIS_TOKEN — this service \
+             processes identity documents. Set MLIS_TOKEN to require Bearer auth (and set \
+             MLIS_TLS_CERT/MLIS_TLS_KEY for TLS)."
+        ))
+    } else {
+        None
+    }
 }
 
 /// Tier-3 auth: when a token is configured, require `Authorization: Bearer <token>`.
@@ -68,13 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Refuse to expose PII processing wide-open: a non-loopback bind requires
     // an auth token (and, ideally, TLS in front).
-    if !is_loopback(&bind_addr) && token.is_none() {
-        return Err(format!(
-            "refusing to bind non-loopback ({bind_addr}) without MLIS_TOKEN — this service \
-             processes identity documents. Set MLIS_TOKEN to require Bearer auth (and set \
-             MLIS_TLS_CERT/MLIS_TLS_KEY for TLS)."
-        )
-        .into());
+    if let Some(reason) = startup_refusal(&bind_addr, &token) {
+        return Err(reason.into());
     }
 
     tokio::fs::create_dir_all(&work_dir).await?;
@@ -200,5 +218,109 @@ async fn cleanup(state: &AppState, paths: &[&PathBuf]) {
     }
     for p in paths {
         let _ = tokio::fs::remove_file(p).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use mlis_pipeline::{DoclingEngine, Pipeline};
+    use tower::ServiceExt;
+
+    #[test]
+    fn is_loopback_recognizes_local_addresses() {
+        assert!(is_loopback("127.0.0.1:8080"));
+        assert!(is_loopback("localhost:8080"));
+        assert!(is_loopback("[::1]:8080"));
+        assert!(!is_loopback("0.0.0.0:8080"));
+        assert!(!is_loopback("192.168.1.5:8080"));
+        // Guards against a substring match on an unrelated host that merely
+        // starts with a loopback-looking prefix.
+        assert!(!is_loopback("127.0.0.1.evil.example:8080"));
+    }
+
+    #[test]
+    fn startup_refuses_non_loopback_without_token() {
+        assert!(startup_refusal("0.0.0.0:8080", &None).is_some());
+    }
+
+    #[test]
+    fn startup_allows_non_loopback_with_token() {
+        assert!(startup_refusal("0.0.0.0:8080", &Some("secret".into())).is_none());
+    }
+
+    #[test]
+    fn startup_allows_loopback_without_token() {
+        assert!(startup_refusal("127.0.0.1:8080", &None).is_none());
+    }
+
+    /// A minimal `AppState` for exercising `require_auth` in isolation, without
+    /// touching a real OCR engine or inferer (neither is called by the
+    /// middleware itself).
+    fn state_with_token(token: Option<&str>) -> Arc<AppState> {
+        let pipeline = Pipeline::new(
+            Box::new(DoclingEngine::new("http://localhost:5001")),
+            "http://127.0.0.1:50051",
+        );
+        Arc::new(AppState {
+            pipeline,
+            work_dir: PathBuf::from("work"),
+            keep_work: false,
+            token: token.map(str::to_string),
+        })
+    }
+
+    fn probe_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/probe", get(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn_with_state(state.clone(), require_auth))
+            .with_state(state)
+    }
+
+    async fn probe(app: Router, auth_header: Option<&str>) -> StatusCode {
+        let mut req = Request::builder().uri("/probe");
+        if let Some(h) = auth_header {
+            req = req.header(AUTHORIZATION, h);
+        }
+        let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        resp.status()
+    }
+
+    #[tokio::test]
+    async fn auth_rejects_missing_bearer_when_token_configured() {
+        let app = probe_app(state_with_token(Some("secret")));
+        assert_eq!(probe(app, None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_rejects_wrong_bearer_when_token_configured() {
+        let app = probe_app(state_with_token(Some("secret")));
+        assert_eq!(
+            probe(app, Some("Bearer wrong")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_rejects_non_bearer_scheme() {
+        let app = probe_app(state_with_token(Some("secret")));
+        assert_eq!(
+            probe(app, Some("Basic secret")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_accepts_correct_bearer_when_token_configured() {
+        let app = probe_app(state_with_token(Some("secret")));
+        assert_eq!(probe(app, Some("Bearer secret")).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_allows_any_request_when_no_token_configured() {
+        let app = probe_app(state_with_token(None));
+        assert_eq!(probe(app, None).await, StatusCode::OK);
     }
 }

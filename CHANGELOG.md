@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-07-17
+
+Coverage hardening: closes the one untested boundary in v0.4.0 (the Rust↔Python gRPC bridge)
+and the one untested surface (`mlis-serve` auth), plus a correctness fix each found.
+
+### Added
+- **Cross-language bridge test** (`crates/mlis-pipeline/tests/bridge_e2e.rs`): drives the real
+  Python inferer (mock mode) from the real Rust `InfererClient`, catching drift across
+  `proto/inferer.proto` / `tonic` / `grpcio` that no other test could — each other test mocks
+  one side of the boundary. Wired into CI as a new `bridge` job.
+- **`mlis-serve` auth test coverage** (was 0 tests): `is_loopback`, the non-loopback-without-token
+  startup refusal, and the bearer-auth middleware (missing/wrong/non-bearer/correct token) are now
+  unit-tested via `tower::ServiceExt::oneshot`.
+
+### Fixed
+- `is_loopback` used a string-prefix check, so an address like `127.0.0.1.evil.example:8080`
+  was wrongly treated as loopback; now parses and exact-matches the host. Caught by the new tests.
+- Tier-2 LLM output could echo HTML-escaped MRZ chevrons (`&lt;` instead of `<`) into fields like
+  `mrz_line`, because docling's Markdown HTML-escapes them and the prompt passed it through
+  verbatim. `python/inferer/prompts.py` now unescapes the Markdown before prompting the model.
+
 ## [0.4.0] — 2026-07-17
 
 Rebrand of `docs-to-md` → **multi-level-id-strip (mlis)** plus a full architecture restructure and

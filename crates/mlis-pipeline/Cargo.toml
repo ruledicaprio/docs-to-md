@@ -23,5 +23,5 @@ native-ocr = ["dep:ocr-daemon"]
 tonic-build = "0.12"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 tokio-stream = { version = "0.1", features = ["net"] }

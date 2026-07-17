@@ -74,3 +74,36 @@ jobs:
         run: |
           python generate_grpc.py
           python smoke_test.py
+
+  # Cross-language E2E: drives the REAL python inferer (mock mode) from the REAL
+  # Rust InfererClient, catching drift across the proto/tonic/grpcio boundary
+  # that the `rust` and `python` jobs above can't (each mocks the other side).
+  bridge:
+    name: Bridge (Rust client -> real Python inferer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: Install python inferer's gRPC dependencies
+        run: pip install "grpcio>=1.60" "grpcio-tools>=1.60" "pydantic>=2.5" "protobuf>=4.25"
+
+      - name: Generate python gRPC stubs
+        working-directory: python
+        run: python generate_grpc.py
+
+      - name: Run the bridge E2E test
+        run: cargo test -p mlis-pipeline --test bridge_e2e -- --ignored
+        env:
+          PYTHON_EXE: python
