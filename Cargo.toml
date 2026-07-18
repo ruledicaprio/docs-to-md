@@ -5,6 +5,7 @@ members = [
     "crates/mrz-wasm",
     "crates/mlis-core",
     "crates/mlis-llm",
+    "crates/mlis-ocr",
     "crates/mlis-pipeline",
     "crates/mlis-cli",
     "crates/mlis-serve",
@@ -19,13 +20,14 @@ default-members = [
     "crates/mrz-wasm",
     "crates/mlis-core",
     "crates/mlis-llm",
+    "crates/mlis-ocr",
     "crates/mlis-pipeline",
     "crates/mlis-cli",
     "crates/mlis-serve",
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["Rusmir Skopljak <rusmirskopljak@gmail.com>"]
 license = "MIT"
@@ -35,6 +37,8 @@ description = "Air-gapped, multi-level identity-document extraction: determinist
 [workspace.dependencies]
 docling_rs = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Pulled in directly by mlis-ocr; ocr-daemon has its own unpinned `image = "0.25"`.
+image = "0.25"
 
 # Release builds: fat LTO + single codegen unit for smaller, faster binaries
 # (the WASM demo payload and the CLI/serve binaries both benefit).

@@ -28,6 +28,8 @@ pub use infer::GrpcInferer;
 pub use infer::InferBackend;
 #[cfg(feature = "inferer-native")]
 pub use infer::NativeInferer;
+#[cfg(feature = "ocr-native-rust")]
+pub use ocr::RustOcrEngine;
 pub use ocr::{DoclingEngine, OcrEngine};
 
 /// gRPC client/server stubs generated from `proto/inferer.proto`.

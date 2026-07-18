@@ -30,6 +30,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Small (~12 MB total) and the URLs/checksums are fixed, so this runs on
+      # every push rather than being workflow_dispatch-gated like native-llm's
+      # ~1 GB GGUF download below.
+      - name: Cache OCR .rten models
+        uses: actions/cache@v4
+        with:
+          path: |
+            text-detection.rten
+            text-recognition.rten
+          key: ocrs-rten-models-v1
+
+      - name: Download + checksum-verify the OCR .rten models
+        run: |
+          for f in text-detection.rten text-recognition.rten; do
+            if [ ! -f "$f" ]; then
+              curl -fL --retry 3 -o "$f" "https://ocrs-models.s3-accelerate.amazonaws.com/$f"
+            fi
+          done
+          echo "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca  text-detection.rten" | sha256sum -c -
+          echo "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e  text-recognition.rten" | sha256sum -c -
+
       - name: Format
         run: cargo fmt --all --check
 
@@ -39,6 +60,12 @@ jobs:
       - name: Test (workspace, includes ocr-daemon)
         run: cargo test --workspace
 
+      - name: Native OCR e2e test (real ocrs/rten models)
+        run: cargo test -p mlis-ocr --test native_ocr_e2e -- --ignored
+
+      - name: Native-rust OCR pipeline smoke test (real ocrs/rten models)
+        run: cargo test -p mlis-pipeline --test rust_ocr_smoke -- --ignored
+
       - name: Build with the native OCR engine
         run: cargo build -p mlis-pipeline --features native-ocr
 
@@ -47,7 +74,15 @@ jobs:
           cargo check -p mlis-pipeline --no-default-features --features inferer-native
           cargo check -p mlis-pipeline --no-default-features --features inferer-grpc
 
+      - name: Check OCR backend feature combinations (each must build alone)
+        run: |
+          cargo check -p mlis-pipeline --no-default-features --features inferer-native,ocr-native-rust
+          cargo check -p mlis-pipeline --no-default-features --features inferer-native,native-ocr
+
   # Cross-platform crates only (no native ocr-daemon / no system OCR libs).
+  # `mlis-ocr` (ocrs/rten) is a default member, so this is real proof of the
+  # "zero Docker/Python, genuinely pure Rust, cross-platform" OCR claim —
+  # unlike ocr-daemon (Tesseract/Leptonica), it builds and tests here unchanged.
   rust-portable:
     name: Rust (${{ matrix.os }}, default members)
     strategy:
@@ -61,7 +96,7 @@ jobs:
       - name: Install protobuf + cmake
         run: brew install protobuf cmake
       - uses: Swatinem/rust-cache@v2
-      - name: Test default members (excludes ocr-daemon)
+      - name: Test default members (excludes ocr-daemon; includes mlis-ocr)
         run: cargo test
 
   python:

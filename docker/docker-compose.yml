@@ -1,10 +1,18 @@
-# Full mlis stack: OCR (docling-serve, CPU) + LLM inferer (gRPC, GPU) + web app.
-# The deliberate CPU/GPU split keeps a small-VRAM card from OOM-ing (see
+# Legacy full mlis stack: OCR (docling-serve, CPU) + LLM inferer (gRPC, GPU) + web app.
+# The default `mlis` binary needs neither service any more — Tier-0 OCR
+# defaults to the in-process `ocrs`/`rten` engine (crate `mlis-ocr`) and Tier-2
+# inference defaults to the in-process GGUF (crate `mlis-llm`). This compose
+# file exists for: (a) PDF input, which the native OCR engine cannot parse
+# (`ocrs` is image-only) and still needs docling-serve, and (b) the legacy
+# gRPC sidecar path, kept one release past `inferer-native` shipping. The
+# deliberate CPU/GPU split keeps a small-VRAM card from OOM-ing (see
 # docs/ARCHITECTURE.md). Run from the repo root: `docker compose -f docker/docker-compose.yml up`.
 name: mlis
 
 services:
-  # Tier-0 OCR: containerized docling-serve (prebuilt image), pinned to the CPU.
+  # Legacy/PDF-only OCR: containerized docling-serve (prebuilt image), pinned
+  # to the CPU. Only needed for PDF input or as an accuracy fallback — the
+  # default `rust` OCR engine handles images in-process with no container.
   docling:
     image: ghcr.io/docling-project/docling-serve
     environment:
@@ -50,9 +58,13 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8080
       DOCLING_URL: http://docling:5001
-      # Pinned to the legacy gRPC sidecar (the `inferer` service above) for this
-      # release; the default backend is now `native` (in-process GGUF, see
-      # crates/mlis-llm). Drop this once the sidecar is retired.
+      # This compose file demonstrates the legacy full stack (docling-serve +
+      # gRPC sidecar), so both engines are pinned explicitly rather than left
+      # at their new in-process defaults (`rust` OCR / `native` inferer).
+      # Drop MLIS_OCR_ENGINE for the default in-process engine unless you
+      # specifically need PDF input, and drop MLIS_INFERER once the sidecar
+      # is retired.
+      MLIS_OCR_ENGINE: docling
       MLIS_INFERER: grpc
       MLIS_INFERER_ADDR: http://inferer:50051
       MLIS_TOKEN: change-me-in-production

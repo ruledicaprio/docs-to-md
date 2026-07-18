@@ -9,8 +9,8 @@
 ![Qwen 2.5](https://img.shields.io/badge/Qwen%202.5-1.5B%20q4__k__m-6236FF?style=flat)
 ![Python](https://img.shields.io/badge/Python-legacy%20fallback-3776AB?style=flat&logo=python&logoColor=white)
 <!-- OCR / runtime -->
-![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
-![docling-serve](https://img.shields.io/badge/docling--serve-OCR-FF6600?style=flat)
+![ocrs](https://img.shields.io/badge/ocrs%2Frten-OCR%20in--process-FF6600?style=flat)
+![Docker](https://img.shields.io/badge/Docker-optional-2496ED?style=flat&logo=docker&logoColor=white)
 <!-- MRZ / demo -->
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat&logo=webassembly&logoColor=white)
 ![ICAO 9303](https://img.shields.io/badge/ICAO%209303-MRZ%20checksums-0B7261?style=flat)
@@ -20,7 +20,7 @@
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline ships files to a local `docling-serve` OCR container, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. As of **v0.6.0** that fallback model runs **in-process** (`mlis-llm`, via `llama-cpp-2`) with no Python, no gRPC sidecar, and no Docker container required for it to work — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and the road to a single static binary. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
+Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. As of **v0.7.0** both stages run **in-process** by default: OCR via [`mlis-ocr`](crates/mlis-ocr/) (`ocrs`/`rten`, pure Rust) and Tier 2 via [`mlis-llm`](crates/mlis-llm/) (`llama-cpp-2`) — no Python, no gRPC sidecar, and no Docker container required for either stage, on Windows/macOS/Linux alike. `docling-serve` (Docker) is still available as an opt-in engine for PDF input, which `ocrs` can't parse — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and the road to a single static binary. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
 
 ## 🔀 Pipeline
 
@@ -34,8 +34,13 @@ flowchart LR
     A --> B{"mlis-cli<br/>or mlis-serve"}
     B --> P["⚙️ mlis-pipeline<br/>process_document()"]
 
-    P -->|"OcrEngine trait"| OCR["🐳 docling-serve<br/>or native ocr-daemon<br/>(Tesseract, Linux/WSL)"]
-    OCR -->|Markdown| P
+    P -->|"OcrEngine trait"| OCR{"OCR engine"}
+    OCR -->|"rust (default)"| RUSTOCR["mlis-ocr crate<br/>in-process ocrs/rten<br/>pure Rust · image-only"]
+    OCR -->|"docling (PDF input)"| DOCLING["🐳 docling-serve<br/>Docker, PDF-capable"]
+    OCR -->|"native (Linux/WSL,<br/>opt-in)"| TESS["native ocr-daemon<br/>(Tesseract)"]
+    RUSTOCR -->|Markdown| P
+    DOCLING -->|Markdown| P
+    TESS -->|Markdown| P
 
     P --> T1{"🔐 Tier 1<br/>ICAO 9303 checksum<br/>valid?"}
     T1 -->|"yes — deterministic,<br/>Tier 2 skipped"| OUT["📦 .md + .json"]
@@ -52,7 +57,7 @@ flowchart LR
     A2 -->|"tesseract.js OCR +<br/>mrz crate as WASM"| PAGES["GitHub Pages<br/>no server at all"]
 ```
 
-Tier 2 is deliberately pluggable (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs)): the **native** backend keeps everything in one process and one binary, which is the whole point of the road to v1.0.0's static musl build; the **gRPC** backend is what shipped through v0.5.x and stays available for one release as a safety net, with GPU acceleration for anyone who's already set up `llama-cpp-python` + CUDA. Full rationale — including why OCR still runs as a separate container by default — in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Both stages are deliberately pluggable. Tier 2 (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs)): the **native** backend keeps everything in one process and one binary, which is the whole point of the road to v1.0.0's static musl build; the **gRPC** backend is what shipped through v0.5.x and stays available for one release as a safety net, with GPU acceleration for anyone who's already set up `llama-cpp-python` + CUDA. OCR (see [`OcrEngine`](crates/mlis-pipeline/src/ocr.rs)): the **rust** engine (`ocrs`/`rten`) is the new default as of v0.7.0 and needs no Docker/Python/C libraries at all; **docling** stays available for PDF input, which `ocrs` can't parse; **native** (Tesseract) is a Linux/WSL-only accuracy fallback. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🖼️ Example
 
@@ -98,20 +103,18 @@ This is explicitly a probabilistic fallback, not a second source of truth: a 1.5
 
 ## 🚀 Quickstart
 
-**1. Start the OCR engine** (Docker):
-```powershell
-docker run -d --name docling-serve -p 5001:5001 `
-  -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 `
-  ghcr.io/docling-project/docling-serve
-```
+No Docker required for the default path — both OCR and Tier 2 run in-process. Image input only
+(no PDF); see the [PDF / `docling`](#pdf-input--docling-serve) note below if you need that.
 
-**2. Download the model** (~1 GB, not tracked in git; the Docker path in step 4 downloads it automatically):
+**1. Download the model** (~1 GB, not tracked in git):
 ```powershell
 curl -L -o qwen2.5-1.5b-instruct-q4_k_m.gguf `
   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
+The two OCR `.rten` weight files (~12 MB total) are fetched and SHA-256-verified automatically on
+first run into `MLIS_OCR_MODEL_DIR` (repo root by default) — no manual step needed.
 
-**3. Run** (from the repo root — Tier 2 runs the GGUF **in-process** by default, no separate inferer process to start):
+**2. Run** (from the repo root):
 ```powershell
 # Preflight: checks OCR/inferer reachability and config before a real run
 cargo run -p mlis-cli -- doctor
@@ -128,10 +131,20 @@ cargo run -p mlis-serve
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
-**4. Or bring the whole stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
-(OCR + web app; the `inferer` sidecar container auto-downloads and checksum-verifies the GGUF into
-`models/` on first start. The compose file pins `MLIS_INFERER=grpc` on `serve` for this release —
-drop that env var, and the `inferer` service entirely, to use the in-process native backend instead.)
+### PDF input / `docling-serve`
+
+`ocrs` (the default OCR engine) only accepts raster images. For PDF input, run the legacy
+`docling-serve` Docker container and set `MLIS_OCR_ENGINE=docling`:
+```powershell
+docker run -d --name docling-serve -p 5001:5001 `
+  -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 `
+  ghcr.io/docling-project/docling-serve
+```
+
+**Or bring the whole legacy stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
+(docling-serve + the gRPC `inferer` sidecar + web app, all pinned explicitly — see the compose
+file's comments. The `inferer` container auto-downloads and checksum-verifies the GGUF into
+`models/` on first start.)
 
 <details>
 <summary><b>Legacy: the Python gRPC sidecar</b> (feature <code>inferer-grpc</code>, kept as a fallback for one release)</summary>
@@ -153,8 +166,12 @@ CLI or `mlis-serve`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MLIS_OCR_ENGINE` | `docling` | `docling` (all platforms) or `native` (Linux/WSL Tesseract, `--features native-ocr`) |
-| `DOCLING_URL` | `http://localhost:5001` | docling-serve OCR endpoint |
+| `MLIS_OCR_ENGINE` | `rust` | `rust` (in-process ocrs/rten, default), `docling` (PDF input), or `native` (Linux/WSL Tesseract, `--features native-ocr`) |
+| `MLIS_OCR_MODEL_DIR` | `.` (repo root) | directory holding `text-detection.rten` / `text-recognition.rten`, `rust` engine only |
+| `MLIS_OCR_DETECTION_SHA256` / `MLIS_OCR_RECOGNITION_SHA256` | *(built-in hash)* | override the expected checksums, `rust` engine only |
+| `MLIS_OCR_MODEL_SKIP_VERIFY` | *(unset)* | skip the `rust` engine's model checksum verification |
+| `MLIS_OCR_AUTO_DOWNLOAD` | `1` | `rust` engine: fetch missing `.rten` files automatically; `0` requires pre-staged files |
+| `DOCLING_URL` | `http://localhost:5001` | docling-serve OCR endpoint, `docling` engine only |
 | `MLIS_INFERER` | `native` | Tier-2 backend: `native` (in-process llama.cpp, default) or `grpc` (legacy Python sidecar) |
 | `MLIS_MODEL_PATH` | `./qwen2.5-1.5b-instruct-q4_k_m.gguf` | GGUF path, `native` backend only |
 | `MLIS_MODEL_N_CTX` | `2048` | context window (tokens), `native` backend only |
@@ -166,7 +183,9 @@ CLI or `mlis-serve`.
 | `MLIS_AUDIT_LOG` | *(unset)* | append PII-free SHA-256 audit records (JSONL) |
 | `MLIS_KEY` | *(unset)* | base64 32-byte AES-256 key → encrypt output to `<input>.json.enc` (`mlis decrypt` to read) |
 
-> **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The native OCR engine (`ocr-daemon`) is Linux/WSL-only.
+> **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The default `rust` OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows. The Tesseract-based `native` OCR engine (`ocr-daemon`) is Linux/WSL-only.
+>
+> **OCR accuracy note:** `ocrs` is brand-new to this project and has not yet been benchmarked against the field-accuracy parity harness that exists for Tier 2. On this workspace's own low/medium-resolution specimen samples, its out-of-the-box text recognition is not always clean enough to reconstruct a checksum-valid MRZ line (filler runs get mis-recognized or truncated) — see `docs/ARCHITECTURE.md`'s honest limitations section. When Tier 1 misses, Tier 2 still runs as usual.
 
 ## 📁 Repository Layout
 
@@ -178,14 +197,16 @@ CLI or `mlis-serve`.
 │   ├── mlis-core/     Canonical Extraction schema + Tier-3 audit/crypto helpers
 │   ├── mlis-llm/      In-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`, ChatML
 │   │                  prompting, JSON repair, model integrity check
-│   ├── mlis-pipeline/ OCR engine trait → Tier 1 MRZ → Tier 2 InferBackend (native | gRPC) → JSON
+│   ├── mlis-ocr/      In-process pure-Rust OCR: ocrs/rten, model download + integrity check
+│   ├── mlis-pipeline/ OcrEngine trait (rust | docling | native) → Tier 1 MRZ →
+│   │                  Tier 2 InferBackend (native | gRPC) → JSON
 │   ├── mlis-cli/      CLI front-end (binary `mlis`; also `mlis decrypt`)
 │   ├── mlis-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
 │   │                  bearer auth + TLS
-│   └── ocr-daemon/    Native Tesseract+Leptonica OCR engine (Linux/WSL only)
+│   └── ocr-daemon/    Native Tesseract+Leptonica OCR engine (Linux/WSL only, legacy accuracy fallback)
 ├── proto/            inferer.proto — the gRPC contract for the legacy Python sidecar backend
 ├── python/inferer/   Legacy Tier-2 sidecar (grpcio, Qwen GGUF via llama.cpp) — one-release fallback
-├── docker/           Dockerfiles + docker-compose.yml (OCR + inferer + web)
+├── docker/           Legacy stack: Dockerfiles + docker-compose.yml (docling OCR + gRPC inferer + web)
 ├── web/              GitHub Pages demo site (static, client-side only)
 ├── samples/          Public-domain specimen documents + example outputs
 └── docs/             Architectural manifest & roadmap

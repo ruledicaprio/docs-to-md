@@ -23,6 +23,42 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     s
 }
 
+/// A file's SHA-256 didn't match what the caller expected, or it couldn't be read.
+#[derive(Debug)]
+pub enum Sha256MismatchError {
+    Io(std::io::Error),
+    Mismatch { expected: String, actual: String },
+}
+
+impl std::fmt::Display for Sha256MismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "could not read file: {e}"),
+            Self::Mismatch { expected, actual } => {
+                write!(f, "sha256 mismatch: expected {expected}, got {actual}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Sha256MismatchError {}
+
+/// Verify `path`'s SHA-256 against `expected` (lowercase hex). Used to confirm
+/// on-disk model weights (GGUF, `.rten`, …) match a known-good build before
+/// loading them into memory — a tampered or substituted file fails closed.
+pub fn verify_file_sha256(path: &Path, expected: &str) -> Result<(), Sha256MismatchError> {
+    let bytes = std::fs::read(path).map_err(Sha256MismatchError::Io)?;
+    let actual = sha256_hex(&bytes);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Sha256MismatchError::Mismatch {
+            expected: expected.to_string(),
+            actual,
+        })
+    }
+}
+
 /// One append-only audit entry. Contains **no PII** — only a fingerprint and
 /// non-identifying metadata.
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +142,19 @@ mod tests {
         assert!(json.contains("\"sha256\""));
         // Sanity: the fingerprint is present but nothing resembling a name/number.
         assert!(json.contains("\"document_type\":\"P\""));
+    }
+
+    #[test]
+    fn verify_file_sha256_detects_match_and_mismatch() {
+        let path =
+            std::env::temp_dir().join(format!("mlis-core-verify-test-{}", std::process::id()));
+        std::fs::write(&path, b"hello").unwrap();
+        let expected = sha256_hex(b"hello");
+
+        assert!(verify_file_sha256(&path, &expected).is_ok());
+        let err = verify_file_sha256(&path, "0000").expect_err("should mismatch");
+        std::fs::remove_file(&path).ok();
+        assert!(matches!(err, Sha256MismatchError::Mismatch { .. }));
     }
 
     #[test]

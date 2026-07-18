@@ -111,25 +111,27 @@ fn decrypt_command(file: Option<&str>) -> Result<(), Box<dyn std::error::Error>>
 async fn doctor_command() -> Result<(), Box<dyn std::error::Error>> {
     let mut ok = true;
 
-    let ocr_engine = env::var("MLIS_OCR_ENGINE").unwrap_or_else(|_| "docling".into());
-    if ocr_engine == "native" {
-        println!("✅ OCR engine: native (in-process, no network check needed)");
-    } else {
-        let docling_url =
-            env::var("DOCLING_URL").unwrap_or_else(|_| "http://localhost:5001".into());
-        let addr = host_port(&docling_url);
-        let reachable = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            tokio::net::TcpStream::connect(addr.as_str()),
-        )
-        .await;
-        match reachable {
-            Ok(Ok(_)) => println!("✅ OCR (docling-serve) reachable at {docling_url}"),
-            _ => {
-                println!("❌ OCR (docling-serve) NOT reachable at {docling_url}");
-                ok = false;
+    let ocr_engine = env::var("MLIS_OCR_ENGINE").unwrap_or_else(|_| "rust".into());
+    match ocr_engine.as_str() {
+        "native" => println!("✅ OCR engine: native (in-process, no network check needed)"),
+        "docling" => {
+            let docling_url =
+                env::var("DOCLING_URL").unwrap_or_else(|_| "http://localhost:5001".into());
+            let addr = host_port(&docling_url);
+            let reachable = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                tokio::net::TcpStream::connect(addr.as_str()),
+            )
+            .await;
+            match reachable {
+                Ok(Ok(_)) => println!("✅ OCR (docling-serve) reachable at {docling_url}"),
+                _ => {
+                    println!("❌ OCR (docling-serve) NOT reachable at {docling_url}");
+                    ok = false;
+                }
             }
         }
+        _ => check_rust_ocr_models(&mut ok),
     }
 
     let pipeline = Pipeline::from_env();
@@ -170,6 +172,60 @@ async fn doctor_command() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Err("doctor: one or more required checks failed".into())
     }
+}
+
+/// Checks the default `rust` OCR engine's two `.rten` weight files: present
+/// under `MLIS_OCR_MODEL_DIR` (default `.`) and sha256-verified — unlike a
+/// pure reachability check, this engine can fail at startup on missing or
+/// corrupt weights.
+#[cfg(feature = "ocr-native-rust")]
+type OcrModelVerifyFn = fn(&Path) -> Result<(), mlis_ocr::verify::VerifyError>;
+
+#[cfg(feature = "ocr-native-rust")]
+fn check_rust_ocr_models(ok: &mut bool) {
+    let model_dir = env::var("MLIS_OCR_MODEL_DIR").unwrap_or_else(|_| ".".into());
+    let dir = Path::new(&model_dir);
+    let skip = mlis_ocr::verify::skip_verify();
+    let checks: [(&str, std::path::PathBuf, OcrModelVerifyFn); 2] = [
+        (
+            "detection",
+            dir.join(mlis_ocr::download::DETECTION_FILENAME),
+            mlis_ocr::verify::verify_detection_model,
+        ),
+        (
+            "recognition",
+            dir.join(mlis_ocr::download::RECOGNITION_FILENAME),
+            mlis_ocr::verify::verify_recognition_model,
+        ),
+    ];
+    for (label, path, verify_fn) in checks {
+        if !path.exists() {
+            println!("❌ OCR (rust) {label} model missing at {}", path.display());
+            *ok = false;
+        } else if skip {
+            println!(
+                "✅ OCR (rust) {label} model present at {} (sha256 verification skipped)",
+                path.display()
+            );
+        } else {
+            match verify_fn(&path) {
+                Ok(()) => println!(
+                    "✅ OCR (rust) {label} model present and sha256-verified at {}",
+                    path.display()
+                ),
+                Err(e) => {
+                    println!("❌ OCR (rust) {label} model: {e}");
+                    *ok = false;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "ocr-native-rust"))]
+fn check_rust_ocr_models(ok: &mut bool) {
+    println!("❌ OCR engine 'rust' selected but this build lacks the `ocr-native-rust` feature");
+    *ok = false;
 }
 
 /// Parses `scheme://host[:port][/path]` down to a `host:port` pair suitable

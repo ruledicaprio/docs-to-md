@@ -1,0 +1,13 @@
+[package]
+name = "mlis-ocr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mlis-core = { path = "../mlis-core", features = ["security"] }
+ocrs = "0.12.2"
+rten = "0.24.0"
+image = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
+
+[dev-dependencies]

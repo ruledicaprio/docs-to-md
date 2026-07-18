@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-07-18
+
+Native Tier-1 OCR: a pure-Rust `ocrs`/`rten` engine now runs in-process, no `docling-serve` Docker
+container required by default. Second step on the road to a single static musl binary — `docling`
+stays available for PDF input (which the native engine can't parse) and the Tesseract-based
+`native-ocr` engine stays as an accuracy fallback.
+
+### Added
+- **`mlis-ocr`** (new crate): `NativeOcr` loads two `.rten` weight files (text detection +
+  recognition) via `ocrs`/`rten`, `get_text()` convenience API for full-text extraction. SHA-256
+  integrity check for both files (`mlis-core::audit::verify_file_sha256`, shared with `mlis-llm`'s
+  model check), auto-download from the fixed `ocrs-models` S3 bucket into `MLIS_OCR_MODEL_DIR`
+  (`MLIS_OCR_AUTO_DOWNLOAD=0` to require pre-staged files).
+- **`RustOcrEngine`** (`mlis-pipeline`, feature `ocr-native-rust`, **default**): the OCR seam is now
+  a three-way `MLIS_OCR_ENGINE` choice (`rust` | `docling` | `native`), mirroring v0.6.0's
+  `InferBackend` pattern. `rust` is image-only — PDF input returns a clear error pointing at
+  `MLIS_OCR_ENGINE=docling` instead of failing confusingly inside `ocrs`.
+- **CI**: `.rten` model files (cached, ~12 MB) downloaded and checksum-verified on every push (not
+  opt-in, unlike the ~1 GB GGUF); `ocr-native-rust`/`native-ocr` feature-combination build checks; a
+  real-model e2e test (`mlis-ocr`) and a pipeline smoke test (`mlis-pipeline`) both run `--ignored`
+  in CI. `mlis-ocr` is a default workspace member, so the macOS `rust-portable` job now also proves
+  the "genuinely pure Rust, cross-platform OCR" claim, unlike `ocr-daemon`.
+
+### Changed
+- `mlis doctor`'s OCR check is now a three-way match: `rust` verifies both model files' presence and
+  checksum, `docling` keeps the existing TCP reachability check, `native` keeps its no-network-check
+  message.
+- `docker/docker-compose.yml`: `docling` service commented as legacy/PDF-only; `serve`'s
+  `MLIS_OCR_ENGINE` is now pinned to `docling` explicitly (previously implicit, since `docling` used
+  to be the only default) to keep that compose file's legacy full-stack demo behavior unchanged.
+- `mlis-core::audit`: `verify_file_sha256`/`Sha256MismatchError` factored out of `mlis-llm::verify`
+  (now a thin wrapper/type-alias over it) so `mlis-ocr` doesn't duplicate the same ~20-line pattern a
+  second and third time (it needs the check for two files).
+
+### Known limitations
+- `ocrs`'s out-of-the-box text recognition is not yet verified against this project's specimen
+  corpus and, on the workspace's own low/medium-resolution samples, is not always clean enough to
+  reconstruct a checksum-valid MRZ line — see `docs/ARCHITECTURE.md` §7. Tier 2 still runs as
+  designed when this happens.
+
 ## [0.6.0] — 2026-07-17
 
 Native Tier-2 inference: the Qwen GGUF now runs in-process via `llama-cpp-2`, no Python sidecar

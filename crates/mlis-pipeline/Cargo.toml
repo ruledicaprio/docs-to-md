@@ -13,15 +13,19 @@ async-trait = "0.1"
 tokio-stream = "0.1"
 # Native Tesseract+Leptonica OCR engine — Linux/WSL only, opt-in.
 ocr-daemon = { path = "../ocr-daemon", optional = true }
+# Pure-Rust ocrs/rten OCR engine — the new default OCR backend.
+mlis-ocr = { path = "../mlis-ocr", optional = true }
 # Tier-2 backends: native llama.cpp (default) and/or the legacy gRPC sidecar.
 mlis-llm = { path = "../mlis-llm", optional = true }
 tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
 
 [features]
-default = ["inferer-native", "inferer-grpc"]
+default = ["inferer-native", "inferer-grpc", "ocr-native-rust"]
 # Compile in the native OCR engine (requires libtesseract/libleptonica; Linux/WSL).
 native-ocr = ["dep:ocr-daemon"]
+# Default OCR backend: pure-Rust ocrs/rten, no external sidecar/C libs.
+ocr-native-rust = ["dep:mlis-ocr"]
 # Tier-2 backend: native llama.cpp inference (mlis-llm), no external sidecar.
 inferer-native = ["dep:mlis-llm"]
 # Tier-2 backend: legacy gRPC sidecar (Python + llama-cpp-python). Kept as a

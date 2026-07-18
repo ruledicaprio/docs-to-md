@@ -2,7 +2,7 @@
 //! Docker inferer's `entrypoint-inferer.sh` performs after downloading, now
 //! run by the Rust binary itself before loading the model into memory.
 
-use mlis_core::audit::sha256_hex;
+use mlis_core::audit::Sha256MismatchError;
 use std::path::Path;
 
 /// The Qwen2.5-1.5B-Instruct Q4_K_M GGUF this workspace ships against.
@@ -10,40 +10,15 @@ use std::path::Path;
 pub const KNOWN_GOOD_SHA256: &str =
     "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
 
-#[derive(Debug)]
-pub enum VerifyError {
-    Io(std::io::Error),
-    Mismatch { expected: String, actual: String },
-}
-
-impl std::fmt::Display for VerifyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "could not read model file: {e}"),
-            Self::Mismatch { expected, actual } => {
-                write!(
-                    f,
-                    "model sha256 mismatch: expected {expected}, got {actual}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for VerifyError {}
+/// [`Sha256MismatchError`] under this crate's established name.
+pub type VerifyError = Sha256MismatchError;
 
 /// Verify `path`'s sha256 against `MLIS_MODEL_SHA256` if set, else
 /// [`KNOWN_GOOD_SHA256`]. Set `MLIS_MODEL_SKIP_VERIFY=1` to skip (a warning is
 /// still worth logging at the call site).
 pub fn verify_model(path: &Path) -> Result<(), VerifyError> {
     let expected = std::env::var("MLIS_MODEL_SHA256").unwrap_or_else(|_| KNOWN_GOOD_SHA256.into());
-    let bytes = std::fs::read(path).map_err(VerifyError::Io)?;
-    let actual = sha256_hex(&bytes);
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(VerifyError::Mismatch { expected, actual })
-    }
+    mlis_core::audit::verify_file_sha256(path, &expected)
 }
 
 /// Whether verification should be skipped for this run (`MLIS_MODEL_SKIP_VERIFY=1`).
@@ -54,6 +29,7 @@ pub fn skip_verify() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mlis_core::audit::sha256_hex;
 
     #[test]
     fn detects_mismatch() {

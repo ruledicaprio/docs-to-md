@@ -13,6 +13,9 @@ python/inferer/inferer_pb2.pyi
 # Local LLM weights (~1 GB — download per README)
 *.gguf
 
+# Local OCR model weights (ocrs/rten — ~12 MB, auto-downloaded per README)
+*.rten
+
 # Web app upload/working directory (may contain uploaded PII)
 work/
 
