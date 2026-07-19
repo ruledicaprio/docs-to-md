@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-cli"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-core"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-license"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-llm"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "encoding_rs",
  "llama-cpp-2",
@@ -1753,18 +1753,19 @@ dependencies = [
 
 [[package]]
 name = "mlis-ocr"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "image",
  "mlis-core",
  "ocrs",
  "reqwest",
  "rten",
+ "sha2 0.10.9",
 ]
 
 [[package]]
 name = "mlis-pipeline"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "image",
@@ -1780,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-serve"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -1806,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "mrz"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -1815,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "mrz-wasm"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "mrz",
  "serde_json",
@@ -1991,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "ocr-daemon"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "image",
  "imageproc",

@@ -4,6 +4,97 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-07-19
+
+Static musl release: a single `x86_64-unknown-linux-musl` binary bundling the pipeline, in-process
+OCR, in-process LLM inference, and licensing — the "copy one file to an air-gapped machine"
+deployment model `docs/ARCHITECTURE.md` §10 has been building toward since v0.6.0. This is the
+final numbered roadmap milestone; from here the project moves to patch releases (`v1.0.1`,
+`v1.0.2`, …) — see the note at the end of this entry.
+
+### Added
+- **musl cross-compile toolchain:** `docker/Dockerfile.builder` (new, replaces an ad-hoc
+  `docker commit`-built image) adds the `x86_64-unknown-linux-musl` Rust target, a pinned Zig
+  release (used as `CC`/`CXX`, giving `llama-cpp-2`'s CMake+bindgen build a real musl-targeting
+  C++17 toolchain), and `cargo-zigbuild`. Chosen over `cross-rs` (weak fit for a C++-heavy build)
+  and manual `musl-gcc` (C-only). The de-risking spike — compiling `mlis-llm` for musl — passed on
+  the first attempt with no CMake flag changes required.
+- **`ocr-embedded` Cargo feature** (`mlis-ocr`'s `embedded-models`, forwarded through
+  `mlis-pipeline`/`mlis-cli`/`mlis-serve`): `build.rs` verifies both `.rten` model files' SHA-256
+  against the same known-good hashes `verify.rs` checks at runtime (factored into a shared
+  `known_good_hashes.rs` so the two can't drift), then `include_bytes!`s them via
+  `rten::Model::load_static_slice` (`NativeOcr::load_embedded`). Off by default — only the musl
+  release build turns it on; the regular glibc dev/CI build keeps the existing runtime-download
+  path unchanged.
+- **Fingerprint fallback for machine-id-less hosts:** `mlis-license::fingerprint` gained a third
+  tier. Stock Alpine (verified against `alpine:3.20` during the spike) ships neither
+  `/etc/machine-id` nor `/var/lib/dbus/machine-id` — previously every such install collapsed onto
+  the same fixed placeholder string. Now a `/dev/urandom`-seeded id is generated once and
+  persisted to `/var/lib/mlis/instance-id` (override: `MLIS_INSTANCE_ID_PATH`), read back on
+  subsequent runs.
+- **CI: `rust-musl` job** (`workflow_dispatch`, opt-in): builds the static release binaries,
+  asserts `native-ocr`/Tesseract is absent from the dependency tree (negative feature-combo
+  check), confirms static linking via `file`, smoke-tests both binaries inside a bare
+  `alpine:3.20` container, and uploads them as a build artifact.
+- **`docker/Dockerfile.musl`** (new): `FROM scratch`, packages the pre-built static binaries with
+  no runtime packages at all (no `ca-certificates` — with `ocr-embedded` on and licensing fully
+  offline, the release build makes zero outbound network calls). Alongside, not replacing, the
+  existing glibc `docker/Dockerfile.serve`.
+- CONTRIBUTING.md: `docker/Dockerfile.builder` build/run instructions, replacing the old ad-hoc
+  image; a new "Cross-compiling to musl locally" section.
+
+### Fixed
+- `mlis doctor`'s OCR preflight check reported the two `.rten` models as "missing" on `ocr-embedded`
+  builds, since it always checked the filesystem regardless of how the engine actually loads its
+  models — a false failure on exactly the air-gapped machines this build exists for. Split into
+  properly feature-gated implementations; embedded builds now report "models embedded in binary".
+- `mlis-ocr/build.rs` resolved its default `MLIS_OCR_MODEL_DIR` (`.`) against the crate's own
+  source directory (`crates/mlis-ocr`, Cargo's build-script CWD), not the workspace root where the
+  CI model-download step and local dev workflows actually put the files — caught by attempting a
+  real `ocr-embedded` build locally, not just a `cargo check`. Now defaults to the workspace root.
+- The persisted-instance-id fingerprint fallback (see Added, above) used a plain `std::fs::write`
+  on first run, which isn't atomic against concurrent first-time callers — two processes racing to
+  create the file could each persist a different value, breaking fingerprint stability. Fixed with
+  `hard_link`-based "first writer wins" semantics (fails closed with `AlreadyExists` instead of
+  silently overwriting), caught by `mlis-cli`'s existing black-box fingerprint-stability test.
+
+### Known limitations
+- The `rust-musl` CI job ships **opt-in, not a required check** — promoting it (bringing required
+  checks from 2 to 3) is planned as a `v1.0.1` fast-follow once it's proven stable over more runs,
+  not blocking this tag.
+- The persisted-instance-id fingerprint fallback is a robustness fix to the existing
+  OS-installation-level threat model (see `crates/mlis-license/src/fingerprint.rs`'s module docs),
+  not an upgrade to it — still not hardware attestation, still root-readable/copyable, and if the
+  target filesystem is read-only the id regenerates every run instead of persisting.
+- The ~1GB GGUF model is not bundled into the release archive — shipped as a separate,
+  independently checksummed download, matching the existing `mlis-llm` verification pattern.
+- `cargo deny`/`cargo about` (config present as `deny.toml`/`about.toml`, but not wired into any
+  CI job before or after this milestone) were not re-run against the musl target as part of this
+  release — no new runtime dependencies were added by the musl work itself (`cargo-zigbuild`/Zig
+  are build-time only, never shipped), so risk is low, but this is unverified rather than
+  confirmed clean.
+
+### Out of scope (documented, not implemented)
+- Statically linking Tesseract/Leptonica (`ocr-daemon`, `native-ocr`) under musl — not attempted;
+  its C dependency chain (libjpeg/libpng/libtiff/zlib, each needing its own musl cross-build) is
+  the same "path of pain" this project has avoided since choosing `ocrs`/`rten` as the default OCR
+  engine in v0.7.0.
+- musl support for macOS/Windows dev builds — musl is Linux-only; `rust-portable` (macOS) is
+  unaffected by this milestone.
+- Hardware-attestation fingerprinting (TPM/HSM) — out of scope, as already documented in
+  `fingerprint.rs`'s threat model.
+- Automated GitHub Release asset upload — the `v1.0.0` release archive is published manually this
+  first time; automating it is a candidate for a later patch release.
+
+### What's next
+Versioning moves to patch releases (`v1.0.1`, `v1.0.2`, …) rather than numbered roadmap
+milestones. The first planned patch, `v1.0.1`, is scoped as a "Production Hardening" release:
+structured logging, a real `/health` endpoint in `mlis-serve`, unit tests for `mlis-pipeline` (the
+central orchestration crate, currently covered only by an ignored-by-default smoke test), and
+`dependabot.yml` — closing the specific gaps that make v1.0.0 riskier to sell against, not a
+general rewrite (the codebase audit backing this found no significant tech debt otherwise). See
+`docs/ARCHITECTURE.md` §10's closing note for where future "what's next" tracking lives.
+
 ## [0.9.0] — 2026-07-19
 
 PII memory hardening + ingest-path fuzzing: the highest-value in-memory PII structures are now
