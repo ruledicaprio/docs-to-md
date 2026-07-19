@@ -119,8 +119,8 @@ Deterministic ICAO 9303 validation, not an AI guess.</p>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="module">
 import init, { parse_mrz_text } from './pkg/mrz_wasm.js';
+import { scanDocument } from './scan.js';
 
-const MRZ_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
 const status = document.getElementById('status');
 const goBtn = document.getElementById('go');
 const wasmReady = init();
@@ -130,46 +130,6 @@ function setStatus(msg, isError = false) {
   status.className = isError ? 'error' : 'muted';
 }
 
-async function toCanvas(bitmap, maxDim = 1600) {
-  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bitmap.width * scale);
-  c.height = Math.round(bitmap.height * scale);
-  c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
-  return c;
-}
-
-function bottomBand(canvas, grayscale, fraction = 0.42, upscale = 2) {
-  const srcY = Math.round(canvas.height * (1 - fraction));
-  const c = document.createElement('canvas');
-  c.width = canvas.width * upscale;
-  c.height = Math.round(canvas.height * fraction) * upscale;
-  const ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(canvas, 0, srcY, canvas.width, canvas.height - srcY, 0, 0, c.width, c.height);
-  if (grayscale) {
-    const img = ctx.getImageData(0, 0, c.width, c.height);
-    const d = img.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      d[i] = d[i + 1] = d[i + 2] = y;
-    }
-    ctx.putImageData(img, 0, 0);
-  }
-  return c;
-}
-
-const workers = {};
-function getWorker(lang) {
-  workers[lang] ??= (async () => {
-    const opts = lang === 'mrz' ? { langPath: './tessdata', gzip: false } : {};
-    const worker = await Tesseract.createWorker(lang, 1, opts);
-    await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS });
-    return worker;
-  })();
-  return workers[lang];
-}
-
 function tryParse(text) {
   const r = JSON.parse(parse_mrz_text(text));
   return r.ok ? r : null;
@@ -177,41 +137,15 @@ function tryParse(text) {
 
 async function scanImage(file) {
   await wasmReady;
-  setStatus('Loading image (downscaling locally)…');
-  const bitmap = await createImageBitmap(file);
-  const full = await toCanvas(bitmap);
-  bitmap.close?.();
-
-  const attempts = [
-    ['mrz', 'Reading MRZ band (OCR-B model)…', () => bottomBand(full, false)],
-    ['mrz', 'Retrying MRZ band in grayscale…', () => bottomBand(full, true)],
-    ['mrz', 'Scanning full image…', () => full],
-    ['eng', 'Retrying with the general model…', () => bottomBand(full, false)],
-    ['eng', 'Scanning full image (general model)…', () => full],
-  ];
-  let best = null;
-  for (const [lang, msg, makeCanvas] of attempts) {
-    setStatus(msg);
-    let worker;
-    try {
-      worker = await getWorker(lang);
-    } catch {
-      continue;
-    }
-    const { data } = await worker.recognize(makeCanvas());
-    const parsed = tryParse(data.text);
-    if (parsed) {
-      if (parsed.valid) {
-        setStatus('');
-        fillForm(parsed);
-        return;
-      }
-      best ??= parsed;
-    }
+  const { result, valid } = await scanDocument(file, tryParse, setStatus);
+  if (result && valid) {
+    setStatus('');
+    fillForm(result);
+    return;
   }
-  if (best) {
+  if (result) {
     setStatus('Document read, but its check digits do not verify — review every field before use.', true);
-    fillForm(best);
+    fillForm(result);
     return;
   }
   setStatus('No machine-readable zone found. Try a sharper, straighter photo of the data page.', true);

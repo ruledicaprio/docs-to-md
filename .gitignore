@@ -21,3 +21,4 @@ crates/mrz-wasm/pkg/
 fuzz/artifacts/
 fuzz/Cargo.lock
 
+web/pkg/

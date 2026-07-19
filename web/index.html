@@ -110,8 +110,8 @@ L898902C36UTO7408122F1204159ZE184226B&lt;&lt;&lt;&lt;&lt;10"></textarea>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="module">
 import init, { parse_mrz_text } from './pkg/mrz_wasm.js';
+import { scanDocument } from './scan.js';
 
-const MRZ_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
 const status = document.getElementById('status');
 const goBtn = document.getElementById('go');
 
@@ -122,52 +122,6 @@ function setStatus(msg, isError = false) {
   status.className = isError ? 'error' : 'muted';
 }
 
-/** Downscale an image to maxDim on the largest side — all in-memory. */
-async function toCanvas(bitmap, maxDim = 1600) {
-  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bitmap.width * scale);
-  c.height = Math.round(bitmap.height * scale);
-  c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
-  return c;
-}
-
-/** Crop the bottom band (where the MRZ lives) and upscale it. Grayscale is
- *  optional — it helps some scans but hurts guilloche-patterned cards. */
-function bottomBand(canvas, grayscale, fraction = 0.42, upscale = 2) {
-  const srcY = Math.round(canvas.height * (1 - fraction));
-  const c = document.createElement('canvas');
-  c.width = canvas.width * upscale;
-  c.height = Math.round(canvas.height * fraction) * upscale;
-  const ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(canvas, 0, srcY, canvas.width, canvas.height - srcY, 0, 0, c.width, c.height);
-  if (grayscale) {
-    const img = ctx.getImageData(0, 0, c.width, c.height);
-    const d = img.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      d[i] = d[i + 1] = d[i + 2] = y;
-    }
-    ctx.putImageData(img, 0, 0);
-  }
-  return c;
-}
-
-// Two OCR models: 'mrz' is fine-tuned on the OCR-B font MRZs are printed in
-// (vendored, BSD-3-Clause © DoubangoTelecom — see tessdata/LICENSE); 'eng'
-// is the generic fallback from the tesseract.js CDN.
-const workers = {};
-function getWorker(lang) {
-  workers[lang] ??= (async () => {
-    const opts = lang === 'mrz' ? { langPath: './tessdata', gzip: false } : {};
-    const worker = await Tesseract.createWorker(lang, 1, opts);
-    await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS });
-    return worker;
-  })();
-  return workers[lang];
-}
-
 function tryParse(text) {
   const r = JSON.parse(parse_mrz_text(text));
   return r.ok ? r : null;
@@ -175,46 +129,15 @@ function tryParse(text) {
 
 async function scanImage(file) {
   await wasmReady;
-  setStatus('Loading image (downscaling locally)…');
-  const bitmap = await createImageBitmap(file);
-  const full = await toCanvas(bitmap);
-  bitmap.close?.();
-
-  // Multiple OCR attempts — the OCR-B-trained model first, then different
-  // preprocessing, then the generic model. Stop at the first checksum-VALID
-  // parse; remember the best parseable-but-invalid one for failure reporting.
-  const attempts = [
-    ['mrz', 'Reading MRZ band (OCR-B model)…', () => bottomBand(full, false)],
-    ['mrz', 'Retrying MRZ band in grayscale…', () => bottomBand(full, true)],
-    ['mrz', 'Scanning full image…', () => full],
-    ['eng', 'Retrying with the general model…', () => bottomBand(full, false)],
-    ['eng', 'Scanning full image (general model)…', () => full],
-  ];
-  let best = null;
-  let bestRaw = null;
-  for (const [lang, msg, makeCanvas] of attempts) {
-    setStatus(msg);
-    let worker;
-    try {
-      worker = await getWorker(lang);
-    } catch {
-      continue; // model failed to load — try the next attempt
-    }
-    const { data } = await worker.recognize(makeCanvas());
-    const parsed = tryParse(data.text);
-    if (parsed) {
-      if (parsed.valid) {
-        setStatus('');
-        render(parsed, data.text);
-        return;
-      }
-      if (!best) { best = parsed; bestRaw = data.text; }
-    }
+  const { result, raw, valid } = await scanDocument(file, tryParse, setStatus);
+  if (result && valid) {
+    setStatus('');
+    render(result, raw);
+    return;
   }
-
-  if (best) {
+  if (result) {
     setStatus('MRZ found, but some check digits failed — bad read or tampered document. See details below.', true);
-    render(best, bestRaw);
+    render(result, raw);
     return;
   }
   setStatus('No MRZ found. Try a sharper, straighter photo of the data page — or paste the MRZ text below.', true);
