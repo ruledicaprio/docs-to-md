@@ -183,6 +183,29 @@ plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptog
 >
 > **OCR accuracy note:** `ocrs` is brand-new to this project and has not yet been benchmarked against the field-accuracy parity harness that exists for Tier 2. On this workspace's own low/medium-resolution specimen samples, its out-of-the-box text recognition is not always clean enough to reconstruct a checksum-valid MRZ line (filler runs get mis-recognized or truncated) — see `docs/ARCHITECTURE.md`'s honest limitations section. When Tier 1 misses, Tier 2 still runs as usual.
 
+## 📦 Static musl release (v1.0.0)
+
+For a true "copy one file to an air-gapped machine" deployment, `mlis`/`mlis-serve` also build as
+single, statically-linked `x86_64-unknown-linux-musl` binaries with the OCR models baked in — no
+Docker, no runtime network access, no shared libraries to install on the target machine.
+
+```bash
+# Build (needs the musl target + Zig + cargo-zigbuild — see docker/Dockerfile.builder,
+# or CONTRIBUTING.md's "Cross-compiling to musl locally" section):
+cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve \
+  --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded
+
+file target/x86_64-unknown-linux-musl/release/mlis   # → "statically linked, stripped"
+```
+
+Deploy: copy `mlis`, `mlis-serve`, and the separately-downloaded GGUF model onto the target
+machine, run `mlis fingerprint` to get an identifier, obtain a license bound to it, drop
+`license.mlis` beside the binary, then run `mlis <file>` — no further setup. See
+[docs/ARCHITECTURE.md §10](docs/ARCHITECTURE.md#10-strategic-roadmap-v10-the-road-to-a-single-static-binary-shipped)
+for the full toolchain rationale (why Zig over `cross-rs`/manual `musl-gcc`) and known
+limitations. `docker/Dockerfile.musl` packages the same binaries into a minimal `FROM scratch`
+image, if you'd rather run it in a container than as a raw binary.
+
 ## 📁 Repository Layout
 
 ```
