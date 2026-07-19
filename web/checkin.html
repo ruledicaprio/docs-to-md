@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guest Check-in Demo — mlis</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+  }
+  h1 { font-size: 1.45rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.05rem; margin: 1.5rem 0 .5rem; }
+  .muted { opacity: .65; font-size: .9rem; }
+  .privacy {
+    border: 1px solid #10b981; border-radius: .5rem; padding: .75rem 1rem;
+    margin: 1rem 0; font-size: .92rem;
+    background: color-mix(in srgb, #10b981 8%, transparent);
+  }
+  .drop {
+    display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    padding: 1rem; margin: 1rem 0; border-radius: .5rem;
+    border: 1px dashed color-mix(in srgb, currentColor 35%, transparent);
+  }
+  button {
+    padding: .5rem 1.25rem; border-radius: .375rem; border: 1px solid currentColor;
+    background: none; color: inherit; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.small { font-size: .85rem; padding: .25rem .8rem; }
+  #status { margin: .5rem 0; min-height: 1.4em; }
+  .error { color: #c0392b; }
+  .verdict { font-weight: 600; padding: .5rem 1rem; border-radius: .5rem; margin: 1rem 0 .5rem; }
+  .verdict.ok { background: color-mix(in srgb, #10b981 15%, transparent); border: 1px solid #10b981; }
+  .verdict.bad { background: color-mix(in srgb, #e67e22 14%, transparent); border: 1px solid #e67e22; }
+  form { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem .9rem; }
+  form .full { grid-column: 1 / -1; }
+  label { display: block; font-size: .8rem; opacity: .7; margin-bottom: .15rem; }
+  input, select {
+    width: 100%; padding: .45rem .6rem; border-radius: .375rem; font: inherit;
+    background: transparent; color: inherit;
+    border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  }
+  input.autofilled { border-color: #10b981; }
+  section#guest { display: none; }
+  .actions { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1rem 0; }
+  footer { margin-top: 2.5rem; font-size: .85rem; opacity: .6; }
+  a { color: inherit; }
+  @media (max-width: 540px) { form { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>🛎️ Guest Check-in <span class="muted">/ Prijava gosta</span></h1>
+<p class="muted">Demo by <a href="https://github.com/ruledicaprio/multi-level-id-strip">mlis</a> —
+photograph a guest's passport or ID card and the registration form fills itself.
+Deterministic ICAO 9303 validation, not an AI guess.</p>
+
+<div class="privacy">
+  🔒 <strong>No guest data leaves this device. / Podaci gosta ne napuštaju ovaj uređaj.</strong><br>
+  This page is static — there is no server behind it. The document photo is read and
+  validated entirely in this browser tab. Close the tab and every trace is gone.
+</div>
+
+<div class="drop">
+  <input type="file" id="file" accept=".jpg,.jpeg,.png,.webp,.bmp" capture="environment">
+  <button id="go">📷 Scan document / Skeniraj</button>
+  <span class="muted">passport (TD3) or ID card (TD1)</span>
+</div>
+<div id="status" class="muted"></div>
+
+<section id="guest">
+  <div id="verdict" class="verdict"></div>
+
+  <h2>Guest / Gost</h2>
+  <form id="regform" autocomplete="off">
+    <div><label for="f-surname">Surname / Prezime</label><input id="f-surname"></div>
+    <div><label for="f-given">Given names / Ime</label><input id="f-given"></div>
+    <div><label for="f-doctype">Document type / Vrsta isprave</label>
+      <select id="f-doctype">
+        <option value="P">Passport / Putovnica</option>
+        <option value="I">ID card / Lična karta</option>
+      </select></div>
+    <div><label for="f-docnum">Document number / Broj isprave</label><input id="f-docnum"></div>
+    <div><label for="f-nationality">Citizenship / Državljanstvo</label><input id="f-nationality"></div>
+    <div><label for="f-dob">Date of birth / Datum rođenja</label><input id="f-dob" type="date"></div>
+    <div><label for="f-sex">Sex / Spol</label>
+      <select id="f-sex"><option>M</option><option>F</option><option>X</option></select></div>
+    <div><label for="f-expiry">Document expiry / Vrijedi do</label><input id="f-expiry" type="date"></div>
+
+    <div class="full"><h2 style="margin:.5rem 0 0">Stay / Boravak <span class="muted">(entered by reception)</span></h2></div>
+    <div><label for="f-arrival">Arrival / Dolazak</label><input id="f-arrival" type="date"></div>
+    <div><label for="f-departure">Departure / Odlazak</label><input id="f-departure" type="date"></div>
+    <div class="full"><label for="f-unit">Unit / Smještajna jedinica (optional)</label><input id="f-unit" placeholder="Room 12 / Apartman A"></div>
+  </form>
+
+  <div class="actions">
+    <button id="copy-row" class="small">📋 Copy row (paste into Excel)</button>
+    <button id="copy-json" class="small">📋 Copy JSON</button>
+    <button id="clear" class="small">🗑 Clear guest / Obriši</button>
+  </div>
+  <p class="muted">Green-bordered fields were read from the document and verified by its printed
+  check digits — review, add the stay dates, then paste into your registration system
+  (eVisitor, eTurista, …). This demo does not submit anywhere by itself.</p>
+</section>
+
+<footer>
+  A ✔ verdict means every ICAO 9303 check digit verifies — the read provably matches the
+  printed machine-readable zone. It does not verify document authenticity.
+  Camera tips: fill the frame with the data page, avoid glare on the MRZ band.<br>
+  Part of <a href="https://github.com/ruledicaprio/multi-level-id-strip">multi-level-id-strip</a> ·
+  the full product runs the same pipeline on your own machine — CLI &amp; self-hosted web app,
+  air-gapped, no per-guest fees. · <a href="./index.html">Technical MRZ validator →</a><br>
+  OCR-B model © <a href="https://github.com/DoubangoTelecom/tesseractMRZ">DoubangoTelecom</a>
+  (BSD-3-Clause) · OCR by tesseract.js · parser: Rust → WASM.
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script type="module">
+import init, { parse_mrz_text } from './pkg/mrz_wasm.js';
+
+const MRZ_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
+const status = document.getElementById('status');
+const goBtn = document.getElementById('go');
+const wasmReady = init();
+
+function setStatus(msg, isError = false) {
+  status.textContent = msg;
+  status.className = isError ? 'error' : 'muted';
+}
+
+async function toCanvas(bitmap, maxDim = 1600) {
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bitmap.width * scale);
+  c.height = Math.round(bitmap.height * scale);
+  c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
+  return c;
+}
+
+function bottomBand(canvas, grayscale, fraction = 0.42, upscale = 2) {
+  const srcY = Math.round(canvas.height * (1 - fraction));
+  const c = document.createElement('canvas');
+  c.width = canvas.width * upscale;
+  c.height = Math.round(canvas.height * fraction) * upscale;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(canvas, 0, srcY, canvas.width, canvas.height - srcY, 0, 0, c.width, c.height);
+  if (grayscale) {
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      d[i] = d[i + 1] = d[i + 2] = y;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  return c;
+}
+
+const workers = {};
+function getWorker(lang) {
+  workers[lang] ??= (async () => {
+    const opts = lang === 'mrz' ? { langPath: './tessdata', gzip: false } : {};
+    const worker = await Tesseract.createWorker(lang, 1, opts);
+    await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS });
+    return worker;
+  })();
+  return workers[lang];
+}
+
+function tryParse(text) {
+  const r = JSON.parse(parse_mrz_text(text));
+  return r.ok ? r : null;
+}
+
+async function scanImage(file) {
+  await wasmReady;
+  setStatus('Loading image (downscaling locally)…');
+  const bitmap = await createImageBitmap(file);
+  const full = await toCanvas(bitmap);
+  bitmap.close?.();
+
+  const attempts = [
+    ['mrz', 'Reading MRZ band (OCR-B model)…', () => bottomBand(full, false)],
+    ['mrz', 'Retrying MRZ band in grayscale…', () => bottomBand(full, true)],
+    ['mrz', 'Scanning full image…', () => full],
+    ['eng', 'Retrying with the general model…', () => bottomBand(full, false)],
+    ['eng', 'Scanning full image (general model)…', () => full],
+  ];
+  let best = null;
+  for (const [lang, msg, makeCanvas] of attempts) {
+    setStatus(msg);
+    let worker;
+    try {
+      worker = await getWorker(lang);
+    } catch {
+      continue;
+    }
+    const { data } = await worker.recognize(makeCanvas());
+    const parsed = tryParse(data.text);
+    if (parsed) {
+      if (parsed.valid) {
+        setStatus('');
+        fillForm(parsed);
+        return;
+      }
+      best ??= parsed;
+    }
+  }
+  if (best) {
+    setStatus('Document read, but its check digits do not verify — review every field before use.', true);
+    fillForm(best);
+    return;
+  }
+  setStatus('No machine-readable zone found. Try a sharper, straighter photo of the data page.', true);
+}
+
+const $ = id => document.getElementById(id);
+const DOC_FIELDS = ['f-surname', 'f-given', 'f-doctype', 'f-docnum', 'f-nationality', 'f-dob', 'f-sex', 'f-expiry'];
+
+function fillForm(r) {
+  $('guest').style.display = 'block';
+  const v = $('verdict');
+  v.className = 'verdict ' + (r.valid ? 'ok' : 'bad');
+  v.textContent = r.valid
+    ? '✔ Document read verified — every ICAO check digit matches / Očitanje potvrđeno'
+    : '⚠ Read NOT verified — check every green field against the document / Provjerite podatke';
+
+  $('f-surname').value = r.surname ?? '';
+  $('f-given').value = r.given_names ?? '';
+  $('f-doctype').value = (r.document_type ?? 'P').startsWith('P') ? 'P' : 'I';
+  $('f-docnum').value = r.document_number ?? '';
+  $('f-nationality').value = r.nationality ?? '';
+  $('f-dob').value = r.date_of_birth ?? '';
+  $('f-sex').value = ['M', 'F'].includes(r.sex) ? r.sex : 'X';
+  $('f-expiry').value = r.date_of_expiry ?? '';
+  for (const id of DOC_FIELDS) $(id).classList.add('autofilled');
+
+  if (!$('f-arrival').value) $('f-arrival').value = new Date().toISOString().slice(0, 10);
+  $('f-arrival').focus();
+}
+
+function formValues() {
+  return {
+    surname: $('f-surname').value,
+    given_names: $('f-given').value,
+    document_type: $('f-doctype').value,
+    document_number: $('f-docnum').value,
+    citizenship: $('f-nationality').value,
+    date_of_birth: $('f-dob').value,
+    sex: $('f-sex').value,
+    document_expiry: $('f-expiry').value,
+    arrival: $('f-arrival').value,
+    departure: $('f-departure').value,
+    unit: $('f-unit').value,
+  };
+}
+
+async function copyText(btn, text, doneLabel) {
+  const old = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = doneLabel;
+  } catch {
+    btn.textContent = '✘ Copy blocked';
+  }
+  setTimeout(() => { btn.textContent = old; }, 1600);
+}
+
+$('copy-row').addEventListener('click', e => {
+  const v = formValues();
+  copyText(e.target, Object.values(v).join('\t'), '✔ Copied row');
+});
+$('copy-json').addEventListener('click', e => {
+  copyText(e.target, JSON.stringify(formValues(), null, 2), '✔ Copied JSON');
+});
+$('clear').addEventListener('click', () => {
+  $('regform').reset();
+  for (const id of DOC_FIELDS) $(id).classList.remove('autofilled');
+  $('guest').style.display = 'none';
+  $('file').value = '';
+  setStatus('Cleared. Nothing was stored. / Obrisano.');
+});
+
+goBtn.addEventListener('click', async () => {
+  const file = $('file').files[0];
+  if (!file) { setStatus('Choose or photograph a document first.', true); return; }
+  goBtn.disabled = true;
+  try {
+    await scanImage(file);
+  } catch (err) {
+    setStatus('Failed: ' + err.message, true);
+  } finally {
+    goBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
