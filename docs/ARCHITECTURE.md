@@ -1,9 +1,9 @@
-# 🏛️ Architectural Manifest: multi-level-id-strip (mlis) — Air-Gapped Document Processing (v0.9.0)
+# 🏛️ Architectural Manifest: multi-level-id-strip (mlis) — Air-Gapped Document Processing (v1.0.0)
 
 ## 1. Executive Summary
 This repository houses the design and implementation of a localized, air-gapped machine learning architecture dedicated to processing identity documents (passports, ID cards). Engineered for high-stakes rental and compliance applications, the system automates data extraction while enforcing strict data privacy, zero recurring cloud API costs, and optimal local hardware utilization. By decoupling high-concurrency file orchestration from heavy machine learning workloads, the pipeline achieves a robust, production-ready foundation for sensitive Personally Identifiable Information (PII) processing.
 
-As of **v0.6.0**, the LLM fallback tier runs **in-process** — no Python interpreter, no gRPC sidecar, no second container required. As of **v0.7.0**, OCR runs in-process too — no Docker container required either, on any platform, for image input. As of **v0.7.5**, both legacy paths (the gRPC Tier-2 sidecar and the Docker-based `docling-serve` OCR engine) are removed entirely rather than merely non-default — which also means **PDF input is no longer supported**; `mlis` is image-only. As of **v0.8.0**, the shipped binaries require an offline, Ed25519-signed license to run their extraction path — the mechanism that makes this a sellable, air-gapped enterprise product rather than just a working prototype (see [§6](#6-offline-cryptographic-licensing-v080)). As of **v0.9.0**, the PII-bearing in-memory structures (`Extraction`, the AES-256 encryption key, `mrz::MrzData`, the raw Tier-2 LLM output) are wiped from memory on drop (`zeroize`/`ZeroizeOnDrop`), and the untrusted ingest path — the `mrz` crate's checksum-verified OCR repair, which does raw byte-index surgery on OCR text and doubles as the public WASM demo's parser — is fuzz-tested, both always-on (`proptest`, every PR) and coverage-guided (`cargo-fuzz`, opt-in). See [§7](#7-security--compliance-posture) and [§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like). This is the fifth concrete step on the road to a single static `musl` binary (see [§10](#10-strategic-roadmap-v10-the-road-to-a-single-static-binary)); everything else in this document describes what's true *today*, in this repo, right now.
+As of **v1.0.0**, the whole pipeline is a single, statically-linked `x86_64-unknown-linux-musl` binary: OCR and LLM inference both run in-process (no Python, no gRPC sidecar, no Docker), OCR models are embedded at compile time, and extraction is gated behind an offline Ed25519-signed license — no cloud call anywhere in the processing path, ever. This document describes what's true *today*, in this repo, right now; for the version-by-version path that got here (v0.6.0 → v1.0.0) see [CHANGELOG.md](../CHANGELOG.md). See [§7](#7-security--compliance-posture) for the security/PII posture and [§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like) for accuracy caveats stated plainly rather than oversold.
 
 ## 2. Architectural Foundation: Two-Tier Extraction Behind a Pluggable Inference Seam
 The system is a **Rust-first pipeline with a deliberately narrow, swappable boundary** where probabilistic inference happens — everything else is deterministic Rust:
@@ -42,15 +42,17 @@ Both the OCR and inference backends are **CPU-only** — that's a deliberate cho
 
 ## 5. Pipeline Execution Flow
 
+Split into two diagrams for readability — the license gate (short, identical shape for both binaries) and the document-processing sequence it guards (the meaty part: OCR → Tier 1 → Tier 2 → persist).
+
+### 5.1 License gate
+
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as User
     participant B as mlis-cli / mlis-serve
     participant L as 🔑 mlis-license (gate)
-    participant P as mlis-pipeline (Pipeline)
-    participant D as OCR engine (rust / native)
-    participant I as 🧠 NativeInferer
+    participant P as mlis-pipeline
 
     U->>B: image file path / multipart upload
     B->>L: check license (CLI: once per run; serve: once at boot + cheap per-request expiry check)
@@ -58,24 +60,37 @@ sequenceDiagram
         L-->>B: refuse
         B-->>U: ❌ license error
     else valid (or MLIS_LICENSE_SKIP=1)
-        B->>P: process_document(path)
-        P->>D: OcrEngine::to_markdown(file)
-        D-->>P: structured Markdown
-        P->>P: write <input>.md
-        P->>P: Tier 1 — ICAO 9303 MRZ checksum validation (TD1/TD2/TD3)
-        alt MRZ composite check digit valid
-            P->>P: deterministic JSON (+ country names, date validity), Tier 2 skipped
-        else no MRZ / checksums failed
-            P->>P: acquire llm_semaphore permit (+ increment queue-depth)
-            P->>I: extract(markdown) / extract_stream(markdown, tx)
-            I->>I: mlis-llm: warm GGUF (llama.cpp, in-process), ChatML prompt, greedy sample
-            I-->>P: Extraction (or streamed deltas, then final result)
-            P->>P: release permit (- decrement queue-depth)
-        end
-        P->>P: persist JSON (AES-256-GCM if MLIS_KEY) + PII-free audit record
-        P-->>B: PipelineResult { markdown, extracted, mrz, method }
-        B-->>U: console output / JSON response (SSE deltas if streaming)
+        B->>P: process_document(path) — see §5.2
     end
+```
+
+### 5.2 Document processing (`Pipeline::process_document`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant B as mlis-cli / mlis-serve
+    participant P as mlis-pipeline (Pipeline)
+    participant D as OCR engine (rust / native)
+    participant I as 🧠 NativeInferer
+
+    P->>D: OcrEngine::to_markdown(file)
+    D-->>P: structured Markdown
+    P->>P: write <input>.md
+    P->>P: Tier 1 — ICAO 9303 MRZ checksum validation (TD1/TD2/TD3)
+    alt MRZ composite check digit valid
+        P->>P: deterministic JSON (+ country names, date validity), Tier 2 skipped
+    else no MRZ / checksums failed
+        P->>P: acquire llm_semaphore permit (+ increment queue-depth)
+        P->>I: extract(markdown) / extract_stream(markdown, tx)
+        I->>I: mlis-llm: warm GGUF (llama.cpp, in-process), ChatML prompt, greedy sample
+        I-->>P: Extraction (or streamed deltas, then final result)
+        P->>P: release permit (- decrement queue-depth)
+    end
+    P->>P: persist JSON (AES-256-GCM if MLIS_KEY) + PII-free audit record
+    P-->>B: PipelineResult { markdown, extracted, mrz, method }
+    B-->>U: console output / JSON response (SSE deltas if streaming)
 ```
 
 ### CLI (`mlis-cli`, binary `mlis`)
@@ -141,19 +156,18 @@ The pipeline has been tested against real-world specimen documents (public-domai
 * **Licensing coverage:** `mlis-license`'s sign/verify/expiry/fingerprint logic is covered by unit tests (round-trip, expiry, fingerprint-mismatch, tampered-payload/signature fail-closed, cross-key rejection); `mlis-cli`'s `fingerprint`/`verify-license`/extraction-gate behavior by a black-box integration test spawning the real binary against fabricated license files; `mlis-serve`'s `license_refusal()` boot gate by unit tests mirroring `startup_refusal()`'s own test style. All verified end-to-end manually too: real `keygen` → `issue-license` bound to a real machine fingerprint → `verify-license`/`doctor` accept it → a single tampered byte is rejected fail-closed.
 * **Ingest-path fuzz coverage (v0.9.0):** `crates/mrz/tests/fuzz_props.rs` runs 256-case `proptest` properties (domain-biased generators over the MRZ charset plus real OCR-noise characters, and single-character mutations of the crate's own ICAO specimen constants) asserting `find_and_parse`/`parse_td1`/`parse_td2`/`parse_td3` never panic, on every push in CI (both the Linux and macOS jobs, via `cargo test --workspace`). `fuzz/` (a `cargo-fuzz`/libFuzzer crate, its own detached workspace so it never touches `cargo build/test --workspace` at the repo root) adds coverage-guided fuzzing of the same two entry points, seeded from the same specimens plus verbatim OCR-garbled samples (tesseract `K`/`L` misreads, docling `&lt;`-escaped merged lines), runnable via the opt-in `workflow_dispatch` `fuzz` CI job or locally with `cargo fuzz run <target>`.
 
-## 10. Strategic Roadmap: v1.0 — The Road to a Single Static Binary (SHIPPED)
-v0.6.0 removed the *default* Python dependency from Tier 2; v0.7.0 removed the *default* Docker dependency from Tier 1's OCR step; v0.7.5 deleted both legacy paths outright, dropping PDF support in the process; v0.8.0 shipped offline cryptographic licensing (see [§6](#6-offline-cryptographic-licensing-v080)); v0.9.0 shipped PII memory hardening + ingest-path fuzzing (see [§7](#7-security--compliance-posture)/[§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like)/[§9](#9-operational-validation)). **v1.0.0 shipped the final milestone: a single static `x86_64-unknown-linux-musl` binary** bundling the pipeline, in-process OCR, in-process LLM inference, and licensing — the "copy one file to an air-gapped machine" deployment model this whole roadmap was building toward.
+## 10. v1.0.0 and Beyond
 
-* **Toolchain: Zig cc via `cargo-zigbuild`.** Chosen over `cross-rs` (weak fit for the C++-heavy `llama-cpp-2` build, stale prebuilt images) and manual `musl-gcc` (C-only, no real C++17 stdlib for `llama.cpp`'s CMake build). Zig ships a pinned, versioned clang+musl sysroot as a drop-in `CC`/`CXX`. The de-risking spike (compiling `mlis-llm`, the crate wrapping `llama-cpp-2`'s C++ FFI, for musl) **passed on the first attempt with no CMake flag changes needed** — `file` confirms the resulting `mlis`/`mlis-serve` binaries are "statically linked, stripped" (~15–16MB each), and both run correctly against a stock `alpine:3.20` container with no dynamic dependencies. `docker/Dockerfile.builder` formalizes the local build image (musl target, pinned Zig, `cargo-zigbuild`) that this depends on — see CONTRIBUTING.md.
-* **OCR models: embedded at compile time.** The air-gapped requirement means the binary can't fetch `.rten` weights from S3 on first run. The new `ocr-embedded` Cargo feature (`mlis-ocr`'s `embedded-models` plus `mlis-pipeline`/`mlis-cli`/`mlis-serve` forwarding features) has `build.rs` verify the two `.rten` files' SHA-256 against the same known-good hashes `verify.rs` checks at runtime, then `include_bytes!`s them via `rten::Model::load_static_slice`. Off by default — only the musl release build turns it on; the regular glibc dev/CI build keeps the fast runtime-download-and-cache path unchanged.
-* **Fingerprint fallback for machine-id-less deployments.** Verified empirically during the spike: stock Alpine ships neither `/etc/machine-id` nor `/var/lib/dbus/machine-id` (no systemd/dbus). Without a fallback, every such install would collapse onto the same placeholder fingerprint — exactly the "two machines, one identity" failure [§6](#6-offline-cryptographic-licensing-v080) already rejects `sysinfo` for. `mlis-license::fingerprint` now persists a `/dev/urandom`-seeded id to `/var/lib/mlis/instance-id` (override: `MLIS_INSTANCE_ID_PATH`) on first run when no OS machine-id exists, and reads it back on subsequent runs.
-* **CI: `rust-musl`, opt-in for now.** New `workflow_dispatch`-only job builds the static binaries, asserts `native-ocr`/Tesseract is absent (a negative feature-combo check — Tesseract-under-musl was never attempted; both this doc and internal planning notes call it "a path of pain": a transitive C dependency chain of libjpeg/libpng/libtiff/zlib each needing their own musl cross-build), confirms static linking via `file`, and smoke-tests the binaries inside a bare `alpine:3.20` container. Starts opt-in (new, C++-heavy cross-compile infra) rather than a required check on day one; promoting it to required is tracked as a v1.0.1 fast-follow once it's proven stable over a few runs.
-* **Deployment artifact.** Raw binary distribution (`mlis` + `mlis-serve`, a `CHECKSUMS.txt`, no bundled ~1GB GGUF — shipped as a separately checksummed download) is the primary product. `docker/Dockerfile.musl` (`FROM scratch`, no `ca-certificates` — the release build makes zero runtime network calls) is a secondary, optional packaging path alongside (not replacing) the existing glibc `docker/Dockerfile.serve`.
-* **Non-goals, explicitly:** no macOS/Windows musl target (musl is Linux-only), no GGUF embedding, no hardware-attestation fingerprinting (TPM/HSM) — the persisted-instance-id fallback above is a robustness fix to the existing OS-installation-level threat model, not an upgrade to it.
+**The roadmap that ran v0.6.0 → v1.0.0 is complete** — Tier 2 went in-process (v0.6.0), then Tier 1's OCR (v0.7.0), both legacy Docker/Python paths were deleted outright (v0.7.5), offline cryptographic licensing shipped (v0.8.0, [§6](#6-offline-cryptographic-licensing-v080)), PII memory hardening + ingest-path fuzzing shipped (v0.9.0, [§7](#7-security--compliance-posture)/[§9](#9-operational-validation)), and **v1.0.0 shipped the final milestone: a single static `x86_64-unknown-linux-musl` binary** — OCR models embedded at compile time, no runtime network access, "copy one file to an air-gapped machine." Full technical detail (toolchain choice, CI design, bugs found and fixed) is in [CHANGELOG.md](../CHANGELOG.md)'s `[1.0.0]` entry — not repeated here to avoid the two documents drifting out of sync.
 
-From here, the project leaves numbered roadmap milestones behind — see the "what's next" note at the end of [CHANGELOG.md](../CHANGELOG.md)'s `[1.0.0]` entry for how post-1.0 patch releases (`v1.0.1`, `v1.0.2`, …) get scoped and tracked going forward.
+The headline architectural facts worth stating in this doc specifically (build once, deploy anywhere the pipeline runs):
 
-`docker/docker-compose.yml` still exists purely as an optional way to build/run the containerized `mlis-serve` image — it is no longer needed for any *functional* code path.
+* **Toolchain:** `cargo-zigbuild` + a pinned Zig release as `CC`/`CXX`, giving `llama-cpp-2`'s C++ build a real musl-targeting toolchain — chosen over `cross-rs`/manual `musl-gcc`. `docker/Dockerfile.builder` is the reproducible local build image.
+* **`ocr-embedded` feature:** off by default (the regular dev/CI loop keeps the fast runtime-download-and-cache path); only the musl release build turns it on, baking both `.rten` files in via `include_bytes!` after the same SHA-256 verification the runtime path uses.
+* **Fingerprint fallback:** stock Alpine ships no OS-level machine-id at all, so `mlis-license::fingerprint` persists a `/dev/urandom`-seeded id on first run (`/var/lib/mlis/instance-id`, override `MLIS_INSTANCE_ID_PATH`) rather than every such install colliding on one placeholder — see [§6](#6-offline-cryptographic-licensing-v080)'s threat model, unchanged in kind, just more robust in this one edge case.
+* **Non-goals, explicitly:** no Tesseract-under-musl (the C dependency chain — libjpeg/libpng/libtiff/zlib — was never worth cross-building), no macOS/Windows musl target, no GGUF embedding, no hardware-attestation fingerprinting (TPM/HSM).
+
+**From here, the project leaves numbered roadmap milestones behind.** Versioning moves to patch releases (`v1.0.1`, `v1.0.2`, …); see the "What's next" note at the end of CHANGELOG's `[1.0.0]` entry for the proposed next scope. `docker/docker-compose.yml` and `docker/Dockerfile.serve` remain as an optional, glibc-based convenience packaging path alongside the musl artifact — neither is required for any functional code path.
 
 ## 11. Getting Started
 See the [README quickstart](../README.md#-quickstart).

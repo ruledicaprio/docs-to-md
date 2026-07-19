@@ -5,10 +5,14 @@ Security is a first-class concern; this document describes the posture and how t
 
 ## Supported versions
 
+Solo-maintained project, patch releases only — the latest `1.0.x` release is the only supported
+one. Pre-1.0 versions (roadmap milestones `v0.4.0` through `v0.9.0`) are unmaintained; upgrade to
+`1.0.x` for any security-relevant fix.
+
 | Version | Supported |
 | --- | --- |
-| 0.4.x | ✅ |
-| < 0.4 | ❌ |
+| 1.0.x | ✅ |
+| < 1.0 | ❌ |
 
 ## Reporting a vulnerability
 
@@ -35,6 +39,24 @@ time for a fix before any public write-up.
   encrypts the output JSON to `<input>.json.enc`; read it back with `mlis decrypt`.
 - **Deterministic core.** Tier 1 (ICAO 9303 MRZ) is checksum-verified math, not a model — no
   hallucinated identity fields when a valid MRZ is present.
+- **Model & license integrity.** The GGUF, both OCR `.rten` weight files (or their compile-time
+  embedded equivalents, see below), and every license file are SHA-256/Ed25519-verified before
+  use — a tampered or substituted file fails closed rather than running silently.
+- **PII memory hardening (v0.9.0, best-effort).** The highest-value in-memory PII carriers
+  (extracted fields, the AES key, raw Tier-2 output) are wiped on drop via `zeroize`. This does
+  not cover every intermediate copy (`serde_json::Value` internals) or on-disk plaintext
+  artifacts (only the optional `MLIS_KEY`-encrypted output is protected at rest) — see
+  [docs/ARCHITECTURE.md §7](docs/ARCHITECTURE.md#7-security--compliance-posture) for the exact
+  scope, stated plainly rather than oversold.
+- **Fuzz-tested ingest path (v0.9.0).** The untrusted-OCR-text repair logic in `mrz` (also the
+  public WASM demo's parser) is covered by an always-on `proptest` suite plus opt-in
+  coverage-guided `cargo-fuzz`.
+- **Static, air-gapped binary (v1.0.0).** The `x86_64-unknown-linux-musl` release build embeds
+  OCR models at compile time and makes zero runtime network calls — nothing to compromise over
+  the wire because there is no wire. Licensing is not hardware-bound (root can read the machine
+  fingerprint, a from-source rebuild bypasses the check) — a compliance/metering mechanism, not
+  DRM; see [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptographic-licensing-v080)
+  for the full threat model.
 
 ## Hardening checklist for production
 
@@ -42,5 +64,5 @@ time for a fix before any public write-up.
 - [ ] Enable TLS (`MLIS_TLS_*`) or front with a TLS-terminating reverse proxy.
 - [ ] Set `MLIS_KEY` to encrypt outputs at rest; store the key in a secrets manager.
 - [ ] Enable `MLIS_AUDIT_LOG` and ship the log to your SIEM.
-- [ ] Keep the GGUF model and containers on trusted, access-controlled hosts.
-- [ ] Run `cargo deny check advisories` / `pip-audit` in CI.
+- [ ] Keep the GGUF model and containers/binaries on trusted, access-controlled hosts.
+- [ ] Run `cargo deny check advisories` in CI (no Python dependencies remain as of v0.7.5).

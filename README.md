@@ -19,7 +19,7 @@
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. Both stages run **in-process**: OCR via [`mlis-ocr`](crates/mlis-ocr/) (`ocrs`/`rten`, pure Rust) and Tier 2 via [`mlis-llm`](crates/mlis-llm/) (`llama-cpp-2`) — no Python, no gRPC sidecar, and no Docker container required, on Windows/macOS/Linux alike. As of **v0.7.5**, this is image-only (JPEG/PNG/WebP/TIFF/BMP/GIF) — PDF input and the Docker-based `docling-serve` engine that used to parse it were removed entirely. As of **v0.8.0**, extraction requires an offline Ed25519-signed license (see [Licensing](#-licensing-v080) below) — the mechanism for selling and metering this without ever phoning home; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and the road to a single static binary. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
+Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. Both stages run **in-process**: OCR via [`mlis-ocr`](crates/mlis-ocr/) (`ocrs`/`rten`, pure Rust) and Tier 2 via [`mlis-llm`](crates/mlis-llm/) (`llama-cpp-2`) — no Python, no gRPC sidecar, and no Docker container required, on Windows/macOS/Linux alike. Image-only (JPEG/PNG/WebP/TIFF/BMP/GIF); extraction requires an offline Ed25519-signed license (see [Licensing](#-licensing-v080) below) — the mechanism for selling and metering this without ever phoning home. As of **v1.0.0**, `mlis`/`mlis-serve` also build as a single, statically-linked `x86_64-unknown-linux-musl` binary with OCR models baked in — see [Static musl release](#-static-musl-release-v100) below. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine. Full version-by-version history lives in [CHANGELOG.md](CHANGELOG.md); architecture rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🔀 Pipeline
 
@@ -193,15 +193,27 @@ Docker, no runtime network access, no shared libraries to install on the target 
 # Build (needs the musl target + Zig + cargo-zigbuild — see docker/Dockerfile.builder,
 # or CONTRIBUTING.md's "Cross-compiling to musl locally" section):
 cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve \
-  --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded
+  --features ocr-embedded
 
 file target/x86_64-unknown-linux-musl/release/mlis   # → "statically linked, stripped"
+```
+
+```mermaid
+flowchart LR
+    SRC["source + Cargo.toml"] -->|"cargo zigbuild<br/>--target musl<br/>--features ocr-embedded"| BIN["mlis / mlis-serve<br/>(~22-26 MB, static)"]
+    RTEN[".rten OCR models<br/>(SHA-256 verified)"] -.->|"include_bytes!<br/>at build time"| BIN
+    BIN -->|"copy to target"| AIR["air-gapped machine<br/>(no network needed)"]
+    GGUF["qwen2.5 GGUF<br/>(~1 GB, separate download)"] -->|"copy alongside"| AIR
+    AIR -->|"mlis fingerprint"| FP["fingerprint string"]
+    FP -->|"send to vendor"| LIC["license.mlis<br/>(Ed25519-signed)"]
+    LIC -->|"drop beside binary"| AIR
+    AIR -->|"mlis &lt;file&gt;"| OUT2["JSON output"]
 ```
 
 Deploy: copy `mlis`, `mlis-serve`, and the separately-downloaded GGUF model onto the target
 machine, run `mlis fingerprint` to get an identifier, obtain a license bound to it, drop
 `license.mlis` beside the binary, then run `mlis <file>` — no further setup. See
-[docs/ARCHITECTURE.md §10](docs/ARCHITECTURE.md#10-strategic-roadmap-v10-the-road-to-a-single-static-binary-shipped)
+[docs/ARCHITECTURE.md §10](docs/ARCHITECTURE.md#10-v100-and-beyond)
 for the full toolchain rationale (why Zig over `cross-rs`/manual `musl-gcc`) and known
 limitations. `docker/Dockerfile.musl` packages the same binaries into a minimal `FROM scratch`
 image, if you'd rather run it in a container than as a raw binary.

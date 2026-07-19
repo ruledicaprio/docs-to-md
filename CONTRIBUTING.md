@@ -51,7 +51,7 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
   -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
   -w /work mlis-builder:latest \
   cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve \
-    --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded
+    --features ocr-embedded
 ```
 
 `ocr-embedded` bakes both `.rten` OCR models into the binary at compile time (needs

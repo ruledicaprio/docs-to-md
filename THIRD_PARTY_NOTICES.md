@@ -3,9 +3,10 @@
 `multi-level-id-strip` (MIT) bundles and builds on third-party open-source components.
 All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 
-> This file is hand-curated and, as of v0.9.0, still not fully current for the native LLM/OCR
-> deps added in v0.6.0/v0.7.0 (`llama-cpp-2`, `ocrs`, `rten`) — verify their licenses before
-> relying on this list. Regenerate the authoritative, version-exact list before a release:
+> This file is hand-curated and, as of v1.0.0, still not independently verified against
+> `cargo about`'s version-exact output for `llama-cpp-2`/`ocrs`/`rten` — treat the table below as
+> a reliable *category* summary (all permissive, no copyleft), but regenerate the authoritative,
+> version-exact list before a release:
 >
 > ```bash
 > cargo install cargo-about cargo-deny
@@ -13,13 +14,18 @@ All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 > cargo deny check licenses           # fail the build on any surprise copyleft
 > ```
 >
-> The legacy Python inferer sidecar (`grpcio`, `pydantic`, `llama-cpp-python`) and `docling_rs`
-> were removed in v0.7.5 along with the gRPC backend and the `docling-serve` OCR engine — no
-> Python dependencies remain in this project at all.
+> No Python dependencies remain in this project at all (removed in v0.7.5 along with the legacy
+> gRPC sidecar and the `docling-serve` OCR engine).
 >
-> The `fuzz/` crate (v0.9.0, coverage-guided fuzzing of `mrz`) is its own detached Cargo
+> The `fuzz/` crate (coverage-guided fuzzing of `mrz`, v0.9.0) is its own detached Cargo
 > workspace and is never built into a shipped binary — its `libfuzzer-sys` dependency is
 > intentionally omitted from the table below, same reasoning as dev-only test dependencies.
+>
+> **Build-only tooling, never shipped in any binary** (v1.0.0's musl cross-compile path):
+> `cargo-zigbuild` (MIT) and the [Zig](https://ziglang.org/) toolchain (MIT) are used at build
+> time to cross-compile `mlis`/`mlis-serve` for `x86_64-unknown-linux-musl` — neither is a
+> runtime or compile-time dependency of the crates themselves, so neither appears in the table
+> below (same reasoning as the Rust toolchain itself not appearing there).
 
 ## Rust crates
 
