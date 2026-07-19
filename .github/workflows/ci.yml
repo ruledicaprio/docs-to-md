@@ -137,3 +137,28 @@ jobs:
 
       - name: Parity harness (field accuracy over samples/*)
         run: cargo test -p mlis-llm --test parity -- --ignored --nocapture
+
+  # Coverage-guided fuzzing of the mrz ingest surface (find_and_parse,
+  # parse_td1/td2/td3). Opt-in like native-llm above: needs nightly + a
+  # non-deterministic bounded run time, which would be a poor fit for a
+  # required PR check (see docs/ARCHITECTURE.md §10 / v0.9.0). The always-on
+  # regression net (never-panics proptest suite) runs in the `rust` job above
+  # as part of `cargo test --workspace`.
+  fuzz:
+    name: Fuzz mrz (cargo-fuzz, opt-in)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz mrz_find_and_parse (60s)
+        run: cargo fuzz run mrz_find_and_parse -- -max_total_time=60
+
+      - name: Fuzz mrz_parse_td (60s)
+        run: cargo fuzz run mrz_parse_td -- -max_total_time=60

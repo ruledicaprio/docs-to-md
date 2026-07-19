@@ -16,3 +16,8 @@ drafts/
 # wasm-pack build output (built in CI for GitHub Pages)
 crates/mrz-wasm/pkg/
 
+# cargo-fuzz crash/timeout artifacts and its own Cargo.lock (the seed corpus
+# under fuzz/corpus/ IS committed — only discovered-crash reproducers aren't).
+fuzz/artifacts/
+fuzz/Cargo.lock
+

@@ -32,6 +32,22 @@ cargo build -p mlis-pipeline --features native-ocr   # wire in the native engine
 The native `ocr-daemon` is **Linux/WSL only** and excluded from `default-members`; CI must not build it
 on Windows/macOS.
 
+### Fuzzing (`mrz`)
+
+`cargo test --workspace` already runs an always-on `proptest` "never panics" suite over `mrz`
+(`crates/mrz/tests/fuzz_props.rs`) — no extra setup needed. For deeper, coverage-guided fuzzing:
+
+```bash
+cargo install cargo-fuzz   # nightly toolchain required
+cargo +nightly fuzz run mrz_find_and_parse -- -max_total_time=60
+cargo +nightly fuzz run mrz_parse_td -- -max_total_time=60
+```
+
+`fuzz/` is its own detached Cargo workspace (see `fuzz/Cargo.toml`) so it never affects
+`cargo build/test --workspace` at the repo root. If a run finds a crash, minimize it, add the
+input to `fuzz/corpus/<target>/` as a permanent regression seed, add a matching `#[test]` in
+`mrz` asserting no panic, then fix the bug.
+
 ## Guidelines
 
 - **Tests are the contract.** The `mrz` crate ships ICAO specimen + real-OCR-noise vectors; keep

@@ -1,0 +1,34 @@
+[package]
+name = "mrz-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.mrz]
+path = "../crates/mrz"
+
+# Its own workspace: keeps this crate (and its libFuzzer-only dependency
+# tree) fully detached from the main `mlis` workspace at the repo root —
+# `cargo test --workspace` / `cargo build --workspace` there never touch it.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "mrz_find_and_parse"
+path = "fuzz_targets/mrz_find_and_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mrz_parse_td"
+path = "fuzz_targets/mrz_parse_td.rs"
+test = false
+doc = false
+bench = false
