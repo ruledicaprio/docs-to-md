@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 mlis-core = { path = "../mlis-core", features = ["security"] }
+# The zero-dep ICAO 9303 engine, used here only as the checksum oracle that
+# decides whether the MRZ retry passes need to run (see src/lib.rs).
+mrz = { path = "../mrz" }
 ocrs = "0.12.2"
 rten = "0.24.0"
 image = { workspace = true }

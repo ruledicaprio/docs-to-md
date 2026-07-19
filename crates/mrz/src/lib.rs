@@ -326,6 +326,21 @@ mod tests {
     }
 
     #[test]
+    fn ocr_repair_deeply_truncated_name_line() {
+        // Verbatim ocrs output for the Croatian specimen at 600×421: line 2 is
+        // read perfectly, but line 1 loses NINE trailing fillers (35/44 chars)
+        // and its `<` document-code filler is misread as `K`. The name line
+        // carries no check digit of its own, so padding the filler run back is
+        // safe — line 2's check digits still prove the read.
+        let text = "PUTOVNICA\nPKHRVSPECIMEN<<SPECIMEN<<<<<<<<<<<<\n0070070071HRV8212258F1407019<<<<<<<<<<<<<<06\n";
+        let d = find_and_parse(text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.surname, "SPECIMEN");
+        assert_eq!(d.given_names, "SPECIMEN");
+        assert_eq!(d.document_number, "007007007");
+    }
+
+    #[test]
     fn invalid_checksums_still_reported() {
         // A tampered MRZ parses but is flagged invalid rather than dropped.
         let tampered = TD3_L2.replacen("740812", "750812", 1);

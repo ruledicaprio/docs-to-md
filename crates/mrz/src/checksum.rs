@@ -243,9 +243,12 @@ fn fit_length(n: &str, target: usize) -> Vec<String> {
 /// The check digits decide which variant — if any — is the true read.
 pub(crate) fn variants(raw: &str, target: usize, repair: fn(&str) -> String) -> Vec<String> {
     let n = normalize_line(raw);
-    // OCR drops trailing fillers wholesale, so tolerate short lines generously
-    // (they get padded back); hallucinated extra characters are rarer.
-    if n.len() + 8 < target || n.len() > target + 4 || !is_mrz_charset(&n) {
+    // OCR drops trailing fillers wholesale — ocrs truncates a TD3 name line's
+    // filler run by 9+ characters on low-resolution scans — so tolerate short
+    // lines generously (they get padded back); hallucinated extra characters
+    // are rarer. Every padded candidate still has to prove itself against the
+    // check digits, so a wider net costs candidates, not correctness.
+    if n.len() + 14 < target || n.len() > target + 4 || !is_mrz_charset(&n) {
         return Vec::new();
     }
     let mut out: Vec<String> = Vec::new();
