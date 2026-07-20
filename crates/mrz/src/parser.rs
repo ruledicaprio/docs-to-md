@@ -386,8 +386,8 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
 
     // TD2: two 36-char lines starting with I/A/C — or both merged into one
     // ~72-char physical line.
-    for i in 0..lines.len() {
-        let merged = normalize_line(lines[i]);
+    for &line in &lines {
+        let merged = normalize_line(line);
         if (68..=76).contains(&merged.len())
             && is_mrz_charset(&merged)
             && matches!(merged.as_bytes().first(), Some(b'I' | b'A' | b'C'))

@@ -99,7 +99,7 @@ pub(crate) fn defiller(s: &str) -> String {
                 .filter(|b| matches!(b, b'K' | b'L'))
                 .count();
             if j - i >= 4 && kl >= 3 {
-                out.extend(std::iter::repeat('<').take(j - i));
+                out.extend(std::iter::repeat_n('<', j - i));
             } else {
                 out.push_str(&s[i..j]);
             }
@@ -112,11 +112,11 @@ pub(crate) fn defiller(s: &str) -> String {
     out
 }
 
+/// One per-index repair rule: apply `fix` to any character at an index inside `range`.
+pub(crate) type RepairRule = (core::ops::Range<usize>, fn(char) -> char);
+
 /// Apply a per-index repair map: `spec` lists `(range, fix)` pairs.
-pub(crate) fn repair_positions(
-    line: &str,
-    spec: &[(core::ops::Range<usize>, fn(char) -> char)],
-) -> String {
+pub(crate) fn repair_positions(line: &str, spec: &[RepairRule]) -> String {
     line.chars()
         .enumerate()
         .map(|(i, c)| {
@@ -187,7 +187,7 @@ fn longest_filler_run(s: &str) -> Option<(usize, usize)> {
             while i < bytes.len() && bytes[i] == b'<' {
                 i += 1;
             }
-            if best.map_or(true, |(_, l)| i - start > l) {
+            if best.is_none_or(|(_, l)| i - start > l) {
                 best = Some((start, i - start));
             }
         } else {
@@ -210,12 +210,12 @@ fn fit_length(n: &str, target: usize) -> Vec<String> {
             if let Some((start, len)) = longest_filler_run(n) {
                 let mut s = String::with_capacity(target);
                 s.push_str(&n[..start + len]);
-                s.extend(core::iter::repeat('<').take(missing));
+                s.extend(core::iter::repeat_n('<', missing));
                 s.push_str(&n[start + len..]);
                 v.push(s);
             }
             let mut padded = n.to_string();
-            padded.extend(core::iter::repeat('<').take(missing));
+            padded.extend(core::iter::repeat_n('<', missing));
             v.push(padded);
             v
         }
@@ -226,7 +226,7 @@ fn fit_length(n: &str, target: usize) -> Vec<String> {
                 if len > extra {
                     let mut s = String::with_capacity(target);
                     s.push_str(&n[..start]);
-                    s.extend(core::iter::repeat('<').take(len - extra));
+                    s.extend(core::iter::repeat_n('<', len - extra));
                     s.push_str(&n[start + len..]);
                     v.push(s);
                 }
