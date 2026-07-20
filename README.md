@@ -9,7 +9,6 @@
 ![Qwen 2.5](https://img.shields.io/badge/Qwen%202.5-1.5B%20q4__k__m-6236FF?style=flat)
 <!-- OCR / runtime -->
 ![ocrs](https://img.shields.io/badge/ocrs%2Frten-OCR%20in--process-FF6600?style=flat)
-![Docker](https://img.shields.io/badge/Docker-not%20required-2496ED?style=flat&logo=docker&logoColor=white)
 <!-- MRZ / demo -->
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat&logo=webassembly&logoColor=white)
 ![ICAO 9303](https://img.shields.io/badge/ICAO%209303-MRZ%20checksums-0B7261?style=flat)
