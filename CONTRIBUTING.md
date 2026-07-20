@@ -23,10 +23,20 @@ any OS), the simplest reproducible path is a Linux Rust container. `docker/Docke
 provides a reproducible one (replaces an earlier ad-hoc `docker commit`-built image), matching
 `.github/workflows/ci.yml`'s `rust` job's system deps plus the musl/Zig toolchain from v1.0.0:
 
+**PowerShell (Windows, no Git Bash needed):**
+```powershell
+docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+docker run --rm -v "${PWD}:/work" `
+  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry `
+  -w /work mlis-builder:latest cargo test --workspace
+```
+
+**bash (Linux / macOS / Git Bash on Windows):**
 ```bash
 docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
 
-# Git Bash on Windows needs MSYS_NO_PATHCONV=1 so `-w /work` isn't mangled into a Windows path.
+# Git Bash on Windows needs MSYS_NO_PATHCONV=1 so `-w /work` isn't mangled into a Windows path;
+# harmless (and unnecessary) on Linux/macOS.
 MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
   -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
   -w /work mlis-builder:latest bash -c "cargo test --workspace"

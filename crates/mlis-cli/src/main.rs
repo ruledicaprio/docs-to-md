@@ -147,6 +147,12 @@ fn check_license_doctor(ok: &mut bool) {
         }
         Err(e) => {
             println!("❌ License ({path}): {e}");
+            if matches!(e, mlis_license::LicenseError::Io(_)) {
+                println!(
+                    "   Tip: no license yet? Run `mlis fingerprint` to get one from your \
+                     vendor, or set MLIS_LICENSE_SKIP=1 for local development."
+                );
+            }
             *ok = false;
         }
     }

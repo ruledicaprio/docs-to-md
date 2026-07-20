@@ -130,10 +130,8 @@ WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported; see [docs/ARCHITE
 
 > **Windows, building from source:** Tier 2 (`llama-cpp-2`) compiles `llama.cpp`'s C++ code and
 > needs CMake + LLVM/libclang + MSVC Build Tools installed — a much heavier ask than plain Rust.
-> If step 2 below fails with a `llama-cpp-sys-2` build error, that's this, not a broken clone.
-> The reproducible fix without installing anything system-wide is a Linux container — see
-> [CONTRIBUTING.md](CONTRIBUTING.md#building--testing) — swap `cargo run -p ...` below for the
-> same command run inside it.
+> If step 2 below fails with a `llama-cpp-sys-2` build error, that's this, not a broken clone —
+> use the Docker path instead, no local toolchain needed.
 
 Clone to running, start to finish:
 
@@ -162,6 +160,38 @@ cargo run -p mlis-serve
 # API example (against mlis-serve from step 4):
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
+
+**No local toolchain? Run the same steps inside the Docker image CI itself uses** —
+`docker/Dockerfile.builder` (Rust + CMake + LLVM/clang + MSVC-equivalent, pre-built):
+
+<details>
+<summary>Windows (PowerShell)</summary>
+
+```powershell
+docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+docker run --rm -v "${PWD}:/work" `
+  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry `
+  -w /work mlis-builder:latest cargo run -p mlis-cli -- doctor
+```
+
+</details>
+
+<details>
+<summary>Linux / macOS (bash)</summary>
+
+```bash
+docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+docker run --rm -v "$PWD:/work" \
+  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
+  -w /work mlis-builder:latest cargo run -p mlis-cli -- doctor
+```
+
+</details>
+
+Swap the trailing `cargo run -p mlis-cli -- doctor` for any of steps 2-4 above. Git Bash on
+Windows needs one extra prefix: `MSYS_NO_PATHCONV=1` before `docker run` (otherwise it mangles
+`-w /work` into a Windows path) — see [CONTRIBUTING.md](CONTRIBUTING.md#building--testing) for
+the full build/test/cross-compile reference.
 
 ## ⚙️ Configuration
 
