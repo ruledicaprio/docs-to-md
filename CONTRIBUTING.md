@@ -88,6 +88,35 @@ input to `fuzz/corpus/<target>/` as a permanent regression seed, add a matching 
 - **No PII in logs or fixtures.** Use the public-domain specimens in `samples/`.
 - **One logical change per PR**, with a clear description. Reference issues where relevant.
 
+### Adding a corpus specimen
+
+`samples/` and `crates/mlis-ocr/examples/mrz_corpus.rs` grow one individually-vetted image at a
+time (see `docs/CORPUS_COVERAGE.md` for the current backlog by country). Before adding a new
+specimen, confirm it meets **both**:
+
+1. **Provenance.** Either a genuine `SPECIMEN` watermark printed on the document itself, or an
+   established synthetic-placeholder MRZ number already used in this corpus (e.g. `E00000000`,
+   `000000000`, `007007007`) — not a coincidence, an intentional marker that the document is a
+   template. When neither is present, treat the image as unverified and don't add it.
+2. **No real personal data.** Reject anything that reads as an actual person's document: a real
+   name + real photo + a non-placeholder document number with no specimen marking. Also reject
+   images watermarked by novelty/fake-ID-document vendors (e.g. "mrpassports.com"-style sites) —
+   different in kind from an official specimen even if the image itself looks clean.
+
+When in doubt, ask rather than include. Once accepted: rename to the
+`<Country>_<DocType>_Specimen[_<Variant>].<ext>` convention (full country name, e.g.
+`North_Macedonia` not `North_macedonia`), run `cargo run -p mlis-ocr --release --example
+mrz_corpus -- --dump` in the `mlis-builder` Docker image to confirm a Tier-1 HIT and read the real
+doc number off the MRZ, add it to `CORPUS` (or `NEGATIVE` if the document has no MRZ at all), and
+update the corresponding row in `docs/CORPUS_COVERAGE.md`.
+
+**PRADO (`consilium.europa.eu/prado`) is never a source for specimens or any other data in this
+repo.** Its copyright notice explicitly prohibits harvesting, copying, or redistributing PRADO
+section material outside official, non-commercial use. It may be consulted manually as a human
+reference (e.g. to check whether a document format is genuinely MRZ-bearing before deciding
+whether to source a specimen) but nothing from it is ever fetched programmatically or stored in
+this repository.
+
 ## Git workflow
 
 `main` is a protected branch: no direct pushes, no force-pushes, even for the repo owner. Every
