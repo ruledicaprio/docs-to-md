@@ -129,28 +129,31 @@ This is explicitly a probabilistic fallback, not a second source of truth: a 1.5
 No Docker or Python required — both OCR and Tier 2 run in-process. Image input only (JPEG, PNG,
 WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like) for why. Extraction needs a license — see [Licensing](#-licensing-v080) below, or set `MLIS_LICENSE_SKIP=1` while developing.
 
-**1. Download the model** (~1 GB, not tracked in git):
+Clone to running, start to finish:
+
 ```powershell
+git clone https://github.com/ruledicaprio/multi-level-id-strip.git
+cd multi-level-id-strip
+
+# 1. Download the Tier-2 model (~1 GB, not tracked in git).
 curl -L -o qwen2.5-1.5b-instruct-q4_k_m.gguf `
   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
-```
-The two OCR `.rten` weight files (~12 MB total) are fetched and SHA-256-verified automatically on
-first run into `MLIS_OCR_MODEL_DIR` (repo root by default) — no manual step needed.
+# The two OCR .rten weight files (~12 MB total) download + SHA-256-verify
+# automatically on first run — no manual step needed for those.
 
-**2. Run** (from the repo root):
-```powershell
-# Preflight: checks OCR/inferer/license and config before a real run
+# 2. Preflight: checks OCR/inferer/license and config before a real run.
 cargo run -p mlis-cli -- doctor
 
-# CLI — one-shot extraction (binary `mlis`; needs a license, or MLIS_LICENSE_SKIP=1):
+# 3. Extract a document (skip the license gate for local dev/testing).
+$env:MLIS_LICENSE_SKIP = "1"
 cargo run -p mlis-cli -- samples/Croatian_passport_data_page.jpg
 
-# Web app — upload page + JSON API on http://127.0.0.1:8080
+# 4. ...or run the web app instead — upload page + JSON API on http://127.0.0.1:8080
 cargo run -p mlis-serve
 ```
 
 ```powershell
-# API example:
+# API example (against mlis-serve from step 4):
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
