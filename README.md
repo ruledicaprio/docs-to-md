@@ -32,11 +32,21 @@ Air-gapped document extraction: passports and ID cards in — structured JSON ou
 - **Single static binary (v1.0.0).** `mlis`/`mlis-serve` also build as one statically-linked `x86_64-unknown-linux-musl` file with the OCR models baked in — see [Static musl release](#-static-musl-release-v100).
 - **Three ways to run it:** the CLI, a self-hostable Axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — Rust compiled to WebAssembly with a self-hosted, zero-CDN OCR runtime, no server at all.
 
-## 🖼️ Example
+## 🖼️ See it work
 
-A public-domain Croatian passport specimen (from [`samples/`](samples/)) → deterministic **Tier 1** extraction, with every ICAO 9303 check digit verified. The LLM never runs:
+<img src="samples/Croatian_passport_data_page.jpg" alt="Croatian passport data page — public-domain specimen" width="380">
 
-<img src="samples/Croatian_passport_data_page.jpg" alt="Croatian passport data page — public-domain specimen" width="460">
+```
+$ mlis Croatian_passport_data_page.jpg
+✔ SPECIMEN SPECIMEN · HRV passport 007007007 · verified in <1s, LLM never ran
+```
+
+That's a real run against the public-domain specimen above (from [`samples/`](samples/)):
+every ICAO 9303 check digit on the printed MRZ verified mathematically, so the deterministic
+**Tier 1** path handled it end-to-end — no LLM call, no guessing.
+
+<details>
+<summary>Full JSON output</summary>
 
 ```json
 {
@@ -58,13 +68,20 @@ A public-domain Croatian passport specimen (from [`samples/`](samples/)) → det
 }
 ```
 
-> `in_date: false` — the specimen expired in 2014 (the live output also carries an exact `days_until_expiry`). A valid composite check digit proves a faithful **read** of the printed zone; whether the document is *in date* is a separate, non-cryptographic judgement.
+`in_date: false` — the specimen expired in 2014 (the live output also carries an exact
+`days_until_expiry`). A valid composite check digit proves a faithful **read** of the printed
+zone; whether the document is *in date* is a separate, non-cryptographic judgement.
 
-**[Try the live demo →](https://ruledicaprio.github.io/multi-level-id-strip/)** The same Rust code compiled to WebAssembly, with a self-hosted (zero-CDN) tesseract.js OCR runtime, on a static GitHub Pages site. **No data is persistent on any server — there is no server.** Images are downscaled and processed entirely inside your browser tab; the extracted JSON is shown for 10 seconds with a copy button, then wiped.
+</details>
+
+**[Try it yourself, live →](https://ruledicaprio.github.io/multi-level-id-strip/)** Same Rust
+code, compiled to WebAssembly, running in your browser tab — no install, no upload to any
+server. Snap or upload a photo and watch the fields fill in; the result is shown for 10 seconds
+with a copy button, then wiped. **No data is ever persistent — there is no server.**
 
 ## 📚 Contents
 
-- [Pipeline](#-pipeline)
+- [How it works](#-how-it-works)
 - [Deterministic MRZ validation (Tier 1)](#-deterministic-mrz-validation-tier-1)
 - [In-process LLM fallback (Tier 2)](#-in-process-llm-fallback-tier-2-v060)
 - [Quickstart](#-quickstart)
@@ -76,35 +93,24 @@ A public-domain Croatian passport specimen (from [`samples/`](samples/)) → det
 - [Acknowledgments](#-acknowledgments)
 - [License](#-license)
 
-## 🔀 Pipeline
+## 🔀 How it works
 
 ```mermaid
 flowchart LR
-    subgraph entry["Entry points"]
-        A["📷 Image"]
-        A2["🌐 Browser demo"]
-    end
-
-    A --> B{"mlis-cli<br/>or mlis-serve"}
-    B --> P["⚙️ mlis-pipeline<br/>process_document()"]
-
-    P -->|"OcrEngine trait"| RUSTOCR["mlis-ocr crate<br/>in-process ocrs/rten<br/>pure Rust"]
-    RUSTOCR -->|Markdown| P
-
-    P --> T1{"🔐 Tier 1<br/>ICAO 9303 checksum<br/>valid?"}
-    T1 -->|"yes — deterministic,<br/>Tier 2 skipped"| OUT["📦 .md + .json"]
-
-    T1 -->|"no — fallback"| T2["🧠 Tier 2<br/>InferBackend trait"]
-    T2 --> NAT["mlis-llm crate<br/>in-process llama.cpp<br/>Qwen 2.5 GGUF · CPU"]
-    NAT --> J2["strict JSON"]
-    J2 --> OUT
-
-    B -.->|"live SSE progress<br/>(mlis-serve only)"| T2
-
-    A2 -->|"self-hosted tesseract.js OCR +<br/>mrz crate as WASM"| PAGES["GitHub Pages<br/>zero CDN, no server at all"]
+    A["📷 ID photo"] --> B["🔎 Read the text<br/>(OCR)"]
+    B --> C{"Machine-readable<br/>zone found?"}
+    C -->|"Yes"| D["✅ Verify checksums<br/>instant, deterministic"]
+    C -->|"No"| E["🧠 AI fallback<br/>reads the layout"]
+    D --> F["📦 Structured JSON"]
+    E --> F
 ```
 
-Both stages are deliberately pluggable, even though each has one backend as of v0.7.5 — the trait boundary (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs), [`OcrEngine`](crates/mlis-pipeline/src/ocr.rs)) is what let v0.6.0/v0.7.0 swap defaults from a Python/Docker sidecar to in-process inference with minimal blast radius, and it's the seam the pipeline's own tests mock against. The legacy gRPC Tier-2 backend and the Docker-based `docling-serve` OCR engine (the only one that parsed PDF) were deleted outright in v0.7.5, and the Tesseract-based `ocr-daemon` accuracy fallback followed in v1.2.0 once the pure-Rust engine measured 100% on the Tier-1 corpus — mlis is genuinely Docker/Python/C-library-free and image-only. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Every document is checked against its own printed math first (Tier 1) — that's what makes the
+green path instant and provably correct, not just "probably right." The AI model (Tier 2) only
+runs on the documents that need it. Both stages run **in the same process**, on your machine —
+no Docker, no Python, no network call, on Windows/macOS/Linux alike. Full engineering detail
+(the pluggable trait boundary, what got deleted along the way, why) is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🔐 Deterministic MRZ validation (Tier 1)
 
