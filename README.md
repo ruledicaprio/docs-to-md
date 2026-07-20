@@ -125,8 +125,15 @@ This is explicitly a probabilistic fallback, not a second source of truth: a 1.5
 
 ## 🚀 Quickstart
 
-No Docker or Python required — both OCR and Tier 2 run in-process. Image input only (JPEG, PNG,
+No Docker or Python required to *run* mlis — both OCR and Tier 2 run in-process. Image input only (JPEG, PNG,
 WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like) for why. Extraction needs a license — see [Licensing](#-licensing-v080) below, or set `MLIS_LICENSE_SKIP=1` while developing.
+
+> **Windows, building from source:** Tier 2 (`llama-cpp-2`) compiles `llama.cpp`'s C++ code and
+> needs CMake + LLVM/libclang + MSVC Build Tools installed — a much heavier ask than plain Rust.
+> If step 2 below fails with a `llama-cpp-sys-2` build error, that's this, not a broken clone.
+> The reproducible fix without installing anything system-wide is a Linux container — see
+> [CONTRIBUTING.md](CONTRIBUTING.md#building--testing) — swap `cargo run -p ...` below for the
+> same command run inside it.
 
 Clone to running, start to finish:
 
