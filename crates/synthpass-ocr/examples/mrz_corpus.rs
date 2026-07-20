@@ -8,8 +8,8 @@
 //! ```
 //! Pass `--dump` to print the raw OCR text for each miss.
 
-use synthpass_ocr::NativeOcr;
 use std::path::{Path, PathBuf};
+use synthpass_ocr::NativeOcr;
 
 /// Every sample that physically carries an MRZ, with the expected document
 /// number from its checked-in `.json` ground truth.

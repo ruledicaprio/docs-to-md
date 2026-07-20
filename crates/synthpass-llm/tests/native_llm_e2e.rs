@@ -11,8 +11,8 @@
 //! once and exercises both `extract` and `extract_stream` against it, rather
 //! than one `NativeLlm` per `#[test]`.
 
-use synthpass_llm::NativeLlm;
 use std::path::PathBuf;
+use synthpass_llm::NativeLlm;
 
 #[test]
 #[ignore]

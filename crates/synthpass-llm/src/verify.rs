@@ -2,8 +2,8 @@
 //! Docker inferer's `entrypoint-inferer.sh` performs after downloading, now
 //! run by the Rust binary itself before loading the model into memory.
 
-use synthpass_core::audit::Sha256MismatchError;
 use std::path::Path;
+use synthpass_core::audit::Sha256MismatchError;
 
 /// The Qwen2.5-1.5B-Instruct Q4_K_M GGUF this workspace ships against.
 /// Override with `SYNTHPASS_MODEL_SHA256` (e.g. when testing a different model).
@@ -17,7 +17,8 @@ pub type VerifyError = Sha256MismatchError;
 /// [`KNOWN_GOOD_SHA256`]. Set `SYNTHPASS_MODEL_SKIP_VERIFY=1` to skip (a warning is
 /// still worth logging at the call site).
 pub fn verify_model(path: &Path) -> Result<(), VerifyError> {
-    let expected = std::env::var("SYNTHPASS_MODEL_SHA256").unwrap_or_else(|_| KNOWN_GOOD_SHA256.into());
+    let expected =
+        std::env::var("SYNTHPASS_MODEL_SHA256").unwrap_or_else(|_| KNOWN_GOOD_SHA256.into());
     synthpass_core::audit::verify_file_sha256(path, &expected)
 }
 

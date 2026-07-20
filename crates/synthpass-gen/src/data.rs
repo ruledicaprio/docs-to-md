@@ -13,8 +13,21 @@ use crate::model::{GeneratorConfig, Passport, Sex};
 
 /// Fictional given names, split by sex so [`Sex`] and name agree.
 const GIVEN_NAMES_M: &[&str] = &[
-    "JOHAN", "ALEKSANDER", "MATEO", "FELIX", "OMAR", "LUCA", "KENJI", "AMARE", "DMITRI", "SOREN",
-    "TARIQ", "NIKOLAI", "PIETRO", "HANS", "ELIAS",
+    "JOHAN",
+    "ALEKSANDER",
+    "MATEO",
+    "FELIX",
+    "OMAR",
+    "LUCA",
+    "KENJI",
+    "AMARE",
+    "DMITRI",
+    "SOREN",
+    "TARIQ",
+    "NIKOLAI",
+    "PIETRO",
+    "HANS",
+    "ELIAS",
 ];
 const GIVEN_NAMES_F: &[&str] = &[
     "ANIKA", "SOFIA", "MAREN", "YUKI", "ZARA", "ELENA", "NADIA", "ASTRID", "LEILANI", "PRIYA",
@@ -23,8 +36,20 @@ const GIVEN_NAMES_F: &[&str] = &[
 
 /// Fictional surnames (never a real family name of a public figure).
 const SURNAMES: &[&str] = &[
-    "VANTERPOOL", "OKONKWO", "BLACKWOOD", "NYSTROM", "CASTELLANO", "WHITFIELD", "MORAVEC",
-    "HALVORSEN", "DUBOISARD", "KIRSCHNER", "ADEYEMI", "STRAND", "PELLETIER", "YAMAMORI",
+    "VANTERPOOL",
+    "OKONKWO",
+    "BLACKWOOD",
+    "NYSTROM",
+    "CASTELLANO",
+    "WHITFIELD",
+    "MORAVEC",
+    "HALVORSEN",
+    "DUBOISARD",
+    "KIRSCHNER",
+    "ADEYEMI",
+    "STRAND",
+    "PELLETIER",
+    "YAMAMORI",
     "ESKANDARI",
 ];
 

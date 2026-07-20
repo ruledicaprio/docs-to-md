@@ -34,18 +34,10 @@ impl Default for GenerateArgs {
 const VALID_PROFILES: &[&str] = &["mobile", "scanner", "worn", "border-kiosk", "clean"];
 
 fn usage() {
-    eprintln!(
-        "Usage: synthpass generate [--count N] [--seed N] [--profile NAME] [--out-dir DIR]"
-    );
-    eprintln!(
-        "  --count N       number of documents to generate (default: 1)"
-    );
-    eprintln!(
-        "  --seed N        base seed; document i uses seed N+i (default: 0)"
-    );
-    eprintln!(
-        "  --profile NAME  clean|mobile|scanner|worn|border-kiosk (default: clean)"
-    );
+    eprintln!("Usage: synthpass generate [--count N] [--seed N] [--profile NAME] [--out-dir DIR]");
+    eprintln!("  --count N       number of documents to generate (default: 1)");
+    eprintln!("  --seed N        base seed; document i uses seed N+i (default: 0)");
+    eprintln!("  --profile NAME  clean|mobile|scanner|worn|border-kiosk (default: clean)");
     eprintln!("  --out-dir DIR   output directory (default: .)");
 }
 
@@ -106,7 +98,11 @@ fn parse_args(args: &[String]) -> Result<GenerateArgs, String> {
 /// Maps this CLI's `--profile` string to `synthpass_gen::degrade`'s
 /// [`CaptureProfile`](synthpass_gen::degrade::CaptureProfile) and applies its
 /// recipe; `clean` stays a no-op (the pristine render, no degradation).
-fn degrade_placeholder(image: image::DynamicImage, profile: &str, seed: u64) -> image::DynamicImage {
+fn degrade_placeholder(
+    image: image::DynamicImage,
+    profile: &str,
+    seed: u64,
+) -> image::DynamicImage {
     use synthpass_gen::degrade::{apply_profile, CaptureProfile};
     let capture_profile = match profile {
         "mobile" => CaptureProfile::Mobile,
@@ -175,7 +171,13 @@ struct FieldLabelRect {
     height: u32,
 }
 
-fn labels_to_json(labels: &Labels, seed: u64, profile: &str, width: u32, height: u32) -> LabelsJson {
+fn labels_to_json(
+    labels: &Labels,
+    seed: u64,
+    profile: &str,
+    width: u32,
+    height: u32,
+) -> LabelsJson {
     LabelsJson {
         document_type: (&labels.document_type).into(),
         issuing_country: (&labels.issuing_country).into(),
@@ -259,10 +261,8 @@ mod tests {
     /// sane (non-empty document number, two 44-char MRZ lines).
     #[test]
     fn generate_batch_produces_valid_outputs() {
-        let out_dir = std::env::temp_dir().join(format!(
-            "synthpass_generate_smoke_{}",
-            std::process::id()
-        ));
+        let out_dir =
+            std::env::temp_dir().join(format!("synthpass_generate_smoke_{}", std::process::id()));
         let out_dir_str = out_dir.to_string_lossy().to_string();
 
         let args = vec![
@@ -292,7 +292,10 @@ mod tests {
             let doc_number = value["document_number"]["value"]
                 .as_str()
                 .expect("document_number.value should be a string");
-            assert!(!doc_number.is_empty(), "document_number should not be empty");
+            assert!(
+                !doc_number.is_empty(),
+                "document_number should not be empty"
+            );
 
             let mrz1 = value["mrz_line1"].as_str().expect("mrz_line1");
             let mrz2 = value["mrz_line2"].as_str().expect("mrz_line2");

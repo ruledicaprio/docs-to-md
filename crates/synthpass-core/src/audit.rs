@@ -159,8 +159,10 @@ mod tests {
 
     #[test]
     fn append_writes_one_json_object_per_line() {
-        let path =
-            std::env::temp_dir().join(format!("synthpass-core-audit-test-{}.jsonl", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "synthpass-core-audit-test-{}.jsonl",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path); // in case a prior run left it behind
 
         let first = AuditRecord::new(

@@ -18,7 +18,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use synthpass_pipeline::{Pipeline, ProcessEvent};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -27,6 +26,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use synthpass_pipeline::{Pipeline, ProcessEvent};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -211,7 +211,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(state);
 
     // Optional TLS (rustls) when both cert and key are provided.
-    match (env::var("SYNTHPASS_TLS_CERT"), env::var("SYNTHPASS_TLS_KEY")) {
+    match (
+        env::var("SYNTHPASS_TLS_CERT"),
+        env::var("SYNTHPASS_TLS_KEY"),
+    ) {
         (Ok(cert), Ok(key)) => {
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             let addr: std::net::SocketAddr = bind_addr.parse().map_err(|e| {

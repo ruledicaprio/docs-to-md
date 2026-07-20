@@ -17,9 +17,9 @@
 //! tier) rather than an OCR-stage error.
 
 use async_trait::async_trait;
+use std::path::PathBuf;
 use synthpass_core::Extraction;
 use synthpass_pipeline::{InferBackend, Pipeline, ProcessEvent, RustOcrEngine};
-use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 /// A trivial Tier-2 backend so this test can complete even when Tier 1

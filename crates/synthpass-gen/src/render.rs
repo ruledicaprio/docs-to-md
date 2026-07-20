@@ -42,13 +42,23 @@ fn border_rect(img: &mut RgbImage, rect: Rect, color: Rgb<u8>, thickness: u32) {
     fill_rect(img, Rect::new(rect.x, rect.y, rect.width, t), color);
     fill_rect(
         img,
-        Rect::new(rect.x, (rect.y + rect.height).saturating_sub(t), rect.width, t),
+        Rect::new(
+            rect.x,
+            (rect.y + rect.height).saturating_sub(t),
+            rect.width,
+            t,
+        ),
         color,
     );
     fill_rect(img, Rect::new(rect.x, rect.y, t, rect.height), color);
     fill_rect(
         img,
-        Rect::new((rect.x + rect.width).saturating_sub(t), rect.y, t, rect.height),
+        Rect::new(
+            (rect.x + rect.width).saturating_sub(t),
+            rect.y,
+            t,
+            rect.height,
+        ),
         color,
     );
 }
@@ -92,7 +102,13 @@ fn draw_mrz_placeholder(img: &mut RgbImage, line_rect: Rect, text: &str) {
 // ---------------------------------------------------------------------
 
 #[cfg(feature = "embedded-fonts")]
-fn draw_glyph_text(img: &mut RgbImage, font: &ab_glyph::FontArc, text: &str, rect: Rect, px_scale: f32) {
+fn draw_glyph_text(
+    img: &mut RgbImage,
+    font: &ab_glyph::FontArc,
+    text: &str,
+    rect: Rect,
+    px_scale: f32,
+) {
     use ab_glyph::{point, Font, ScaleFont};
 
     let scaled = font.as_scaled(px_scale);
@@ -328,7 +344,12 @@ pub fn render(passport: &Passport, labels: &Labels) -> DynamicImage {
     let fonts: Option<Fonts> = load_fonts().ok();
     let fonts_ref = fonts.as_ref();
 
-    draw_text_field(&mut img, layout::DOCUMENT_TYPE, &labels.document_type.value, fonts_ref);
+    draw_text_field(
+        &mut img,
+        layout::DOCUMENT_TYPE,
+        &labels.document_type.value,
+        fonts_ref,
+    );
     draw_text_field(
         &mut img,
         layout::ISSUING_COUNTRY,
@@ -336,14 +357,24 @@ pub fn render(passport: &Passport, labels: &Labels) -> DynamicImage {
         fonts_ref,
     );
     draw_text_field(&mut img, layout::SURNAME, &labels.surname.value, fonts_ref);
-    draw_text_field(&mut img, layout::GIVEN_NAMES, &labels.given_names.value, fonts_ref);
+    draw_text_field(
+        &mut img,
+        layout::GIVEN_NAMES,
+        &labels.given_names.value,
+        fonts_ref,
+    );
     draw_text_field(
         &mut img,
         layout::DOCUMENT_NUMBER,
         &labels.document_number.value,
         fonts_ref,
     );
-    draw_text_field(&mut img, layout::NATIONALITY, &labels.nationality.value, fonts_ref);
+    draw_text_field(
+        &mut img,
+        layout::NATIONALITY,
+        &labels.nationality.value,
+        fonts_ref,
+    );
     draw_text_field(
         &mut img,
         layout::DATE_OF_BIRTH,
@@ -391,6 +422,9 @@ mod tests {
                 }
             }
         }
-        assert!(differs, "watermark region must differ from a blank template");
+        assert!(
+            differs,
+            "watermark region must differ from a blank template"
+        );
     }
 }

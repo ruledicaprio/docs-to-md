@@ -2,8 +2,8 @@
 //! loads, mirroring `synthpass-llm/src/verify.rs`'s GGUF check but run twice (once
 //! per detection/recognition model).
 
-use synthpass_core::audit::Sha256MismatchError;
 use std::path::Path;
+use synthpass_core::audit::Sha256MismatchError;
 
 include!("known_good_hashes.rs");
 

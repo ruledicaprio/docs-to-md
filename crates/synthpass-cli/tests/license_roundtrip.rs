@@ -10,9 +10,9 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use synthpass_license::{LicensePayload, SignedLicense, FORMAT_VERSION};
 use std::path::PathBuf;
 use std::process::Command;
+use synthpass_license::{LicensePayload, SignedLicense, FORMAT_VERSION};
 
 /// Removes the fixture file even if an assertion panics mid-test.
 struct TempFileGuard(PathBuf);
@@ -55,8 +55,10 @@ fn sample_payload(hw_fingerprint: &str, expires_unix: u64) -> LicensePayload {
 }
 
 fn write_license_fixture(name: &str, signed: &SignedLicense) -> TempFileGuard {
-    let path =
-        std::env::temp_dir().join(format!("synthpass-cli-test-{name}-{}.mlis", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "synthpass-cli-test-{name}-{}.mlis",
+        std::process::id()
+    ));
     let json = serde_json::to_string_pretty(signed).expect("SignedLicense serializes");
     std::fs::write(&path, json).expect("write license fixture");
     TempFileGuard(path)
@@ -172,7 +174,10 @@ fn extraction_path_refuses_expired_license_but_skip_bypasses_the_gate() {
     let output = Command::new(env!("CARGO_BIN_EXE_synthpass"))
         .arg(input_path.to_str().unwrap())
         .env("SYNTHPASS_LICENSE_PUBKEY", &pubkey_b64)
-        .env("SYNTHPASS_LICENSE_PATH", license_fixture.0.to_str().unwrap())
+        .env(
+            "SYNTHPASS_LICENSE_PATH",
+            license_fixture.0.to_str().unwrap(),
+        )
         .output()
         .expect("run `synthpass <file>`");
     assert!(
@@ -195,7 +200,10 @@ fn extraction_path_refuses_expired_license_but_skip_bypasses_the_gate() {
     let output = Command::new(env!("CARGO_BIN_EXE_synthpass"))
         .arg(input_path.to_str().unwrap())
         .env("SYNTHPASS_LICENSE_PUBKEY", &pubkey_b64)
-        .env("SYNTHPASS_LICENSE_PATH", license_fixture.0.to_str().unwrap())
+        .env(
+            "SYNTHPASS_LICENSE_PATH",
+            license_fixture.0.to_str().unwrap(),
+        )
         .env("SYNTHPASS_LICENSE_SKIP", "1")
         .env("SYNTHPASS_OCR_AUTO_DOWNLOAD", "0")
         .env("SYNTHPASS_OCR_MODEL_DIR", &empty_model_dir)

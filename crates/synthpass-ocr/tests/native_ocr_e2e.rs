@@ -5,8 +5,8 @@
 //! cargo test -p synthpass-ocr --test native_ocr_e2e -- --ignored
 //! ```
 
-use synthpass_ocr::NativeOcr;
 use std::path::PathBuf;
+use synthpass_ocr::NativeOcr;
 
 #[test]
 #[ignore]

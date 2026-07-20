@@ -63,19 +63,19 @@ fn name_strategy() -> impl Strategy<Value = String> {
 fn yymmdd_strategy() -> impl Strategy<Value = String> {
     // Keep month/day within always-valid ranges so `expand_date` accepts
     // them cleanly (no plausibility rejection to work around here).
-    (0u32..100, 1u32..=12, 1u32..=28)
-        .prop_map(|(yy, mm, dd)| format!("{yy:02}{mm:02}{dd:02}"))
+    (0u32..100, 1u32..=12, 1u32..=28).prop_map(|(yy, mm, dd)| format!("{yy:02}{mm:02}{dd:02}"))
 }
 
 fn sex_strategy() -> impl Strategy<Value = String> {
-    prop_oneof![Just("M".to_string()), Just("F".to_string()), Just("X".to_string())]
+    prop_oneof![
+        Just("M".to_string()),
+        Just("F".to_string()),
+        Just("X".to_string())
+    ]
 }
 
 fn personal_number_strategy() -> impl Strategy<Value = Option<String>> {
-    prop_oneof![
-        Just(None),
-        "[A-Z0-9]{1,14}".prop_map(Some),
-    ]
+    prop_oneof![Just(None), "[A-Z0-9]{1,14}".prop_map(Some),]
 }
 
 proptest! {

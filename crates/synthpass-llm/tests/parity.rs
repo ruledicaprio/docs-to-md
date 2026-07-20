@@ -15,9 +15,9 @@
 //! equality per file. A regression that tanks the match rate is the signal to
 //! watch for — not any single field on any single document.
 
+use std::path::PathBuf;
 use synthpass_core::Extraction;
 use synthpass_llm::NativeLlm;
-use std::path::PathBuf;
 
 /// Samples with both OCR Markdown and a ground-truth extraction fixture.
 const FIXTURES: &[&str] = &[

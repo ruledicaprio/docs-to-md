@@ -73,10 +73,12 @@ mod rust_ocr {
                     {
                         // No filesystem/network access at all — the models
                         // are already in the binary (see synthpass-ocr/build.rs).
-                        return tokio::task::spawn_blocking(synthpass_ocr::NativeOcr::load_embedded)
-                            .await
-                            .map_err(|e| format!("ocr model load task panicked: {e}"))?
-                            .map(Arc::new);
+                        return tokio::task::spawn_blocking(
+                            synthpass_ocr::NativeOcr::load_embedded,
+                        )
+                        .await
+                        .map_err(|e| format!("ocr model load task panicked: {e}"))?
+                        .map(Arc::new);
                     }
                     #[cfg(not(feature = "ocr-embedded"))]
                     {

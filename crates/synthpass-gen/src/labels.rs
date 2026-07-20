@@ -117,7 +117,10 @@ mod tests {
                 rects.push(pn.rect);
             }
             for r in rects {
-                assert!(r.within_bounds(IMAGE_WIDTH, IMAGE_HEIGHT), "{r:?} out of bounds");
+                assert!(
+                    r.within_bounds(IMAGE_WIDTH, IMAGE_HEIGHT),
+                    "{r:?} out of bounds"
+                );
             }
         }
     }

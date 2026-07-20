@@ -84,7 +84,8 @@ mod native {
                         // tampered or corrupted GGUF must fail closed before it's ever
                         // mapped into memory, not just when someone remembers to preflight.
                         if !synthpass_llm::verify::skip_verify() {
-                            synthpass_llm::verify::verify_model(&path).map_err(|e| e.to_string())?;
+                            synthpass_llm::verify::verify_model(&path)
+                                .map_err(|e| e.to_string())?;
                         }
                         synthpass_llm::NativeLlm::load(&path, n_ctx)
                     })
@@ -188,7 +189,8 @@ pub fn backend_from_env() -> Box<dyn InferBackend> {
 }
 
 fn native_choice() -> Box<dyn InferBackend> {
-    let model_path = std::env::var("SYNTHPASS_MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.into());
+    let model_path =
+        std::env::var("SYNTHPASS_MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.into());
     let n_ctx = std::env::var("SYNTHPASS_MODEL_N_CTX")
         .ok()
         .and_then(|s| s.parse().ok())

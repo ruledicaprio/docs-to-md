@@ -52,27 +52,42 @@ pub enum CaptureProfile {
 /// rather than being monolithic special cases.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Degradation {
-    GaussianBlur { sigma: f32 },
+    GaussianBlur {
+        sigma: f32,
+    },
     /// `amount` in `0.0..=1.0`; per-pixel, per-channel additive noise.
-    Noise { amount: f32 },
+    Noise {
+        amount: f32,
+    },
     /// Small angles, +/- a few degrees. Rotates about the image center;
     /// pixels that would fall outside the original canvas are filled by
     /// clamping to the nearest edge pixel, so output dimensions never
     /// change.
-    Rotate { degrees: f32 },
+    Rotate {
+        degrees: f32,
+    },
     /// `<1.0` fades (reduced contrast, as with faded ink), `>1.0` boosts.
-    Contrast { factor: f32 },
+    Contrast {
+        factor: f32,
+    },
     /// A radial brightness effect centered on the image. `is_glare = false`
     /// darkens the corners (vignette); `is_glare = true` blows out a
     /// localized bright spot (flash glare). `strength` in `0.0..=1.0`.
-    VignetteOrGlare { strength: f32, is_glare: bool },
+    VignetteOrGlare {
+        strength: f32,
+        is_glare: bool,
+    },
     /// Draws `count` localized fold-line artifacts (a thin shadow/highlight
     /// pair along a random line), simulating a handled/creased document.
-    Crease { count: u32 },
+    Crease {
+        count: u32,
+    },
     /// Simulates JPEG-style compression blockiness: averages pixels within
     /// 8x8 blocks (proportionally to `strength`, in `0.0..=1.0`) and
     /// accentuates the resulting block boundaries.
-    JpegBlockiness { strength: f32 },
+    JpegBlockiness {
+        strength: f32,
+    },
 }
 
 /// The ordered list of [`Degradation`]s a [`CaptureProfile`] applies, so a
@@ -196,7 +211,12 @@ fn contrast(img: &RgbImage, factor: f32) -> RgbImage {
     out
 }
 
-fn vignette_or_glare(img: &RgbImage, strength: f32, is_glare: bool, rng: &mut ChaCha8Rng) -> RgbImage {
+fn vignette_or_glare(
+    img: &RgbImage,
+    strength: f32,
+    is_glare: bool,
+    rng: &mut ChaCha8Rng,
+) -> RgbImage {
     let strength = strength.clamp(0.0, 1.0);
     let (width, height) = img.dimensions();
     let mut out = img.clone();

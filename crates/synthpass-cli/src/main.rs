@@ -6,10 +6,10 @@
 //! cargo run -p synthpass-cli -- samples/Croatian_passport_data_page.jpg
 //! ```
 
-use synthpass_pipeline::Pipeline;
 use std::env;
 use std::io::Write;
 use std::path::Path;
+use synthpass_pipeline::Pipeline;
 
 mod generate;
 

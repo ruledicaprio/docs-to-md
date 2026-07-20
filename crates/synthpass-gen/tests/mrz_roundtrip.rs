@@ -25,29 +25,46 @@ fn generated_mrz_round_trips_through_mrz_crate() {
         );
 
         assert_eq!(parsed.document_type, passport.document_type, "seed {seed}");
-        assert_eq!(parsed.issuing_country, passport.issuing_country, "seed {seed}");
+        assert_eq!(
+            parsed.issuing_country, passport.issuing_country,
+            "seed {seed}"
+        );
         assert_eq!(parsed.surname, passport.surname, "seed {seed}");
         assert_eq!(parsed.given_names, passport.given_names, "seed {seed}");
-        assert_eq!(parsed.document_number, passport.document_number, "seed {seed}");
+        assert_eq!(
+            parsed.document_number, passport.document_number,
+            "seed {seed}"
+        );
         assert_eq!(parsed.nationality, passport.nationality, "seed {seed}");
         assert_eq!(
             parsed.date_of_birth,
             format!(
                 "{:04}-{:02}-{:02}",
-                passport.date_of_birth.year, passport.date_of_birth.month, passport.date_of_birth.day
+                passport.date_of_birth.year,
+                passport.date_of_birth.month,
+                passport.date_of_birth.day
             ),
             "seed {seed}"
         );
-        assert_eq!(parsed.sex, passport.sex.as_mrz_char().to_string(), "seed {seed}");
+        assert_eq!(
+            parsed.sex,
+            passport.sex.as_mrz_char().to_string(),
+            "seed {seed}"
+        );
         assert_eq!(
             parsed.date_of_expiry,
             format!(
                 "{:04}-{:02}-{:02}",
-                passport.date_of_expiry.year, passport.date_of_expiry.month, passport.date_of_expiry.day
+                passport.date_of_expiry.year,
+                passport.date_of_expiry.month,
+                passport.date_of_expiry.day
             ),
             "seed {seed}"
         );
-        assert_eq!(parsed.personal_number, passport.personal_number, "seed {seed}");
+        assert_eq!(
+            parsed.personal_number, passport.personal_number,
+            "seed {seed}"
+        );
     }
 }
 

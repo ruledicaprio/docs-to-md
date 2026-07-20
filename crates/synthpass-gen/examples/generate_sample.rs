@@ -18,9 +18,14 @@ fn main() {
         let png = format!("{out_dir}/synthpass_seed{seed}.png");
         image.save(&png).expect("write png");
 
-        println!("seed {seed}: {} {} ({}), doc {}",
-            passport.given_names, passport.surname, passport.nationality, passport.document_number);
-        println!("  MRZ:\n    {}", labels.mrz_string().replace('\n', "\n    "));
+        println!(
+            "seed {seed}: {} {} ({}), doc {}",
+            passport.given_names, passport.surname, passport.nationality, passport.document_number
+        );
+        println!(
+            "  MRZ:\n    {}",
+            labels.mrz_string().replace('\n', "\n    ")
+        );
         println!("  -> {png} ({}x{})\n", image.width(), image.height());
     }
 }

@@ -27,13 +27,13 @@ pub use ocr::OcrEngine;
 #[cfg(feature = "ocr-native-rust")]
 pub use ocr::RustOcrEngine;
 
-use synthpass_core::v2::{CheckDigits, ExtractionV2, MrzBlock, MrzFormat, Provenance};
-use synthpass_core::Extraction;
 use serde_json::Value;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use synthpass_core::v2::{CheckDigits, ExtractionV2, MrzBlock, MrzFormat, Provenance};
+use synthpass_core::Extraction;
 use tokio::sync::{mpsc, Semaphore};
 use zeroize::Zeroizing;
 
@@ -261,8 +261,15 @@ impl Pipeline {
     async fn ocr_and_tier1(
         &self,
         input: &Path,
-    ) -> Result<(String, PathBuf, Option<mrz::MrzData>, Option<(Value, ExtractionV2)>), PipelineError>
-    {
+    ) -> Result<
+        (
+            String,
+            PathBuf,
+            Option<mrz::MrzData>,
+            Option<(Value, ExtractionV2)>,
+        ),
+        PipelineError,
+    > {
         let markdown = self.ocr.to_markdown(input).await?;
 
         let md_path = input.with_extension("md");
@@ -441,8 +448,8 @@ impl Pipeline {
         });
 
         let written = if let Some(key) = &self.encrypt_key {
-            let blob =
-                synthpass_core::crypt::encrypt(key, pretty.as_bytes()).map_err(std::io::Error::other)?;
+            let blob = synthpass_core::crypt::encrypt(key, pretty.as_bytes())
+                .map_err(std::io::Error::other)?;
             let enc_path = json_path.with_extension("json.enc");
             tokio::fs::write(&enc_path, blob).await?;
             enc_path
@@ -550,8 +557,8 @@ fn lift_tier2_extraction(extraction: &Extraction, model_id: Option<String>) -> E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synthpass_core::v2::{FieldConfidence, LLM_HEURISTIC_CONFIDENCE};
     use std::sync::Mutex;
+    use synthpass_core::v2::{FieldConfidence, LLM_HEURISTIC_CONFIDENCE};
 
     /// Serializes tests that read or mutate `SYNTHPASS_JSON_V1` — the env var is
     /// process-global, and `cargo test` runs cases on parallel threads.
@@ -717,7 +724,9 @@ mod tests {
     /// next to the input, hence the per-test directory.
     async fn temp_input(tag: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("synthpass-m1-{tag}-{}", std::process::id()));
-        tokio::fs::create_dir_all(&dir).await.expect("create temp dir");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create temp dir");
         let input = dir.join("input.jpg");
         tokio::fs::write(&input, b"not a real image - OCR is mocked")
             .await
@@ -791,11 +800,11 @@ mod tests {
             "the backend's real model id is stamped, not 'unknown'"
         );
         assert_eq!(v2.confidence, FieldConfidence::llm_heuristic());
-        assert_eq!(
-            v2.confidence.document_number,
-            LLM_HEURISTIC_CONFIDENCE
+        assert_eq!(v2.confidence.document_number, LLM_HEURISTIC_CONFIDENCE);
+        assert!(
+            result.extracted.is_some(),
+            "v1 compat field still populated"
         );
-        assert!(result.extracted.is_some(), "v1 compat field still populated");
         // The mock echoes 4 chars of the markdown into v1's `mrz_line`; the
         // lift carries it over but with every check digit false — a Tier-2
         // MRZ-shaped echo is never checksum-proven.

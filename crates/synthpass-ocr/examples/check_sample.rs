@@ -14,8 +14,8 @@
 //! cargo run -p synthpass-ocr --release --example check_sample -- <path-to-image>
 //! ```
 
-use synthpass_ocr::NativeOcr;
 use std::path::{Path, PathBuf};
+use synthpass_ocr::NativeOcr;
 
 fn main() {
     let path = match std::env::args().nth(1) {

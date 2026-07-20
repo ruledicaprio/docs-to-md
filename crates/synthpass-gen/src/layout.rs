@@ -64,12 +64,7 @@ pub const MRZ_LINE2: Rect = Rect::new(60, 775, 1080, 50);
 pub fn mrz_char_rect(line: Rect, index: u32) -> Rect {
     debug_assert!(index < MRZ_CHARS);
     let cell_width = line.width / MRZ_CHARS;
-    Rect::new(
-        line.x + index * cell_width,
-        line.y,
-        cell_width,
-        line.height,
-    )
+    Rect::new(line.x + index * cell_width, line.y, cell_width, line.height)
 }
 
 #[cfg(test)]

@@ -10,10 +10,10 @@
 //!     [--license-id lic-001] [--out license.mlis]
 //! ```
 
-use synthpass_license::sign;
-use synthpass_license::LicensePayload;
 use std::collections::HashMap;
 use std::env;
+use synthpass_license::sign;
+use synthpass_license::LicensePayload;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

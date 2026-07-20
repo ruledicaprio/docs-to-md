@@ -411,10 +411,7 @@ impl From<&Extraction> for ExtractionV2 {
                 },
             ),
         };
-        let mrz_format = v1
-            .mrz_line
-            .as_deref()
-            .and_then(MrzFormat::guess_from_lines);
+        let mrz_format = v1.mrz_line.as_deref().and_then(MrzFormat::guess_from_lines);
         let mrz = v1.mrz_line.as_ref().map(|lines| MrzBlock {
             lines: lines.clone(),
             // A zone whose shape we can't classify still gets recorded; TD3

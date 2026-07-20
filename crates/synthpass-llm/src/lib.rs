@@ -19,10 +19,10 @@ use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
-use synthpass_core::Extraction;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Mutex;
+use synthpass_core::Extraction;
 use zeroize::Zeroizing;
 
 /// The ChatML stop sequence Qwen emits at the end of a turn.
