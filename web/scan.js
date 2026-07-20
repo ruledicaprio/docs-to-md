@@ -1,6 +1,6 @@
 // Shared document-scanning module for the browser demos (index.html,
 // checkin.html) — the JS port of the native pipeline's v1.1.0 MRZ retry
-// strategy (crates/mlis-ocr/src/preprocess.rs): try the OCR-B-trained model
+// strategy (crates/synthpass-ocr/src/preprocess.rs): try the OCR-B-trained model
 // over preprocessed variants of the MRZ band (plain, percentile contrast
 // stretch, Otsu binarization), then the full image, then the generic model,
 // and stop at the first checksum-VALID parse. The ICAO check digits are the

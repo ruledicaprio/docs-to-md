@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in `multi-level-id-strip` (mlis). This is a pure-Rust workspace (no
+Thanks for your interest in `multi-level-id-strip` (SynthPass). This is a pure-Rust workspace (no
 Python, no Docker required for any functional path as of v0.7.5) plus a WASM browser demo.
 
 ## Layout
@@ -8,12 +8,12 @@ Python, no Docker required for any functional path as of v0.7.5) plus a WASM bro
 ```
 crates/mrz          zero-dep ICAO 9303 engine (TD1/TD2/TD3, checksum-verified OCR repair)
 crates/mrz-wasm     wasm-bindgen wrapper for the GitHub Pages demo
-crates/mlis-core    canonical Extraction schema + Tier-3 audit/crypto (feature `security`)
-crates/mlis-llm     in-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`
-crates/mlis-ocr     in-process pure-Rust OCR: `ocrs`/`rten`
-crates/mlis-pipeline  OcrEngine trait → Tier 1 MRZ → Tier 2 InferBackend → JSON
-crates/mlis-cli     CLI (binary `mlis`, + `mlis decrypt`)
-crates/mlis-serve   axum web app (auth, TLS)
+crates/synthpass-core    canonical Extraction schema + Tier-3 audit/crypto (feature `security`)
+crates/synthpass-llm     in-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`
+crates/synthpass-ocr     in-process pure-Rust OCR: `ocrs`/`rten`
+crates/synthpass-pipeline  OcrEngine trait → Tier 1 MRZ → Tier 2 InferBackend → JSON
+crates/synthpass-cli     CLI (binary `synthpass`, + `synthpass decrypt`)
+crates/synthpass-serve   axum web app (auth, TLS)
 ```
 
 ## Building & testing
@@ -25,41 +25,41 @@ provides a reproducible one (replaces an earlier ad-hoc `docker commit`-built im
 
 **PowerShell (Windows, no Git Bash needed):**
 ```powershell
-docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+docker build -f docker/Dockerfile.builder -t synthpass-builder:latest .
 docker run --rm -v "${PWD}:/work" `
-  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry `
-  -w /work mlis-builder:latest cargo test --workspace
+  -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry `
+  -w /work synthpass-builder:latest cargo test --workspace
 ```
 
 **bash (Linux / macOS / Git Bash on Windows):**
 ```bash
-docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+docker build -f docker/Dockerfile.builder -t synthpass-builder:latest .
 
 # Git Bash on Windows needs MSYS_NO_PATHCONV=1 so `-w /work` isn't mangled into a Windows path;
 # harmless (and unnecessary) on Linux/macOS.
 MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
-  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
-  -w /work mlis-builder:latest bash -c "cargo test --workspace"
+  -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry \
+  -w /work synthpass-builder:latest bash -c "cargo test --workspace"
 ```
 
 ### Cross-compiling to musl locally
 
-`mlis-builder` ships `x86_64-unknown-linux-musl`'s Rust std, a pinned Zig (the `CC`/`CXX` for
+`synthpass-builder` ships `x86_64-unknown-linux-musl`'s Rust std, a pinned Zig (the `CC`/`CXX` for
 `llama-cpp-2`'s C++ build under musl), and `cargo-zigbuild` — see docs/ARCHITECTURE.md §10 for why
 Zig was chosen over `cross-rs`/manual `musl-gcc`:
 
 ```bash
 MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
-  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
-  -w /work mlis-builder:latest \
-  cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve \
+  -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry \
+  -w /work synthpass-builder:latest \
+  cargo zigbuild --release --target x86_64-unknown-linux-musl -p synthpass-cli -p synthpass-serve \
     --features ocr-embedded
 ```
 
 `ocr-embedded` bakes both `.rten` OCR models into the binary at compile time (needs
-`text-detection.rten`/`text-recognition.rten` already present under `MLIS_OCR_MODEL_DIR`, default
-`.` — see `crates/mlis-ocr/build.rs`); omit it to keep the regular runtime-download OCR path. Verify
-the result actually links static: `file target/x86_64-unknown-linux-musl/release/mlis` should say
+`text-detection.rten`/`text-recognition.rten` already present under `SYNTHPASS_OCR_MODEL_DIR`, default
+`.` — see `crates/synthpass-ocr/build.rs`); omit it to keep the regular runtime-download OCR path. Verify
+the result actually links static: `file target/x86_64-unknown-linux-musl/release/synthpass` should say
 "statically linked".
 
 ### Fuzzing (`mrz`)
@@ -90,7 +90,7 @@ input to `fuzz/corpus/<target>/` as a permanent regression seed, add a matching 
 
 ### Adding a corpus specimen
 
-`samples/` and `crates/mlis-ocr/examples/mrz_corpus.rs` grow one individually-vetted image at a
+`samples/` and `crates/synthpass-ocr/examples/mrz_corpus.rs` grow one individually-vetted image at a
 time (see `docs/CORPUS_COVERAGE.md` for the current backlog by country). Before adding a new
 specimen, confirm it meets **both**:
 
@@ -104,18 +104,18 @@ specimen, confirm it meets **both**:
    different in kind from an official specimen even if the image itself looks clean.
 
 **Instant first-pass checking.** `./scripts/watch-samples.ps1` watches `samples/` and, the moment
-a new image appears, runs `crates/mlis-ocr/examples/check_sample.rs` against it (via the
-`mlis-builder` Docker image) and opens the image for you. It reports whether the file OCRs to a
+a new image appears, runs `crates/synthpass-ocr/examples/check_sample.rs` against it (via the
+`synthpass-builder` Docker image) and opens the image for you. It reports whether the file OCRs to a
 checksum-valid MRZ and whether the word "specimen" appears anywhere in the OCR text — a fast,
 non-authoritative signal, not a verdict. It does not replace the provenance/PII judgment above; a
 clean OCR hit is not proof of a genuine specimen, and a miss is not proof it isn't. To check a
-single file by hand instead: `cargo run -p mlis-ocr --release --example check_sample -- samples/<file>`
+single file by hand instead: `cargo run -p synthpass-ocr --release --example check_sample -- samples/<file>`
 in the Docker image.
 
 When in doubt, ask rather than include. Once accepted: rename to the
 `<Country>_<DocType>_Specimen[_<Variant>].<ext>` convention (full country name, e.g.
-`North_Macedonia` not `North_macedonia`), run `cargo run -p mlis-ocr --release --example
-mrz_corpus -- --dump` in the `mlis-builder` Docker image to confirm a Tier-1 HIT and read the real
+`North_Macedonia` not `North_macedonia`), run `cargo run -p synthpass-ocr --release --example
+mrz_corpus -- --dump` in the `synthpass-builder` Docker image to confirm a Tier-1 HIT and read the real
 doc number off the MRZ, add it to `CORPUS` (or `NEGATIVE` if the document has no MRZ at all), and
 update the corresponding row in `docs/CORPUS_COVERAGE.md`.
 

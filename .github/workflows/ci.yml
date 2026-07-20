@@ -62,8 +62,8 @@ jobs:
       # Not covered by the default-features workspace test above: the
       # vendor-gated signing/keygen path (issuer binary + its round-trip
       # test) is opt-in on purpose, so it needs its own explicit run.
-      - name: Test mlis-license vendor (signing/keygen) feature
-        run: cargo test -p mlis-license --features vendor
+      - name: Test synthpass-license vendor (signing/keygen) feature
+        run: cargo test -p synthpass-license --features vendor
 
       # These two steps are *smoke* tests — they assert the OCR stage runs and
       # the pipeline reaches a terminal result, never Tier-1 MRZ accuracy — but
@@ -72,33 +72,33 @@ jobs:
       # is ~5 min on CI's 2-core runner in debug vs ~2 s in release. Running the
       # two steps in `--release` collapses execution to seconds (measured: e2e
       # 2.0 s, pipeline smoke 10.8 s); the one-time release build is cached by
-      # `Swatinem/rust-cache`. `MLIS_OCR_MAX_PASSES=1` is complementary: the
+      # `Swatinem/rust-cache`. `SYNTHPASS_OCR_MAX_PASSES=1` is complementary: the
       # format test's PNG/WebP re-encodes miss Tier-1 and would otherwise run the
       # retry loop these smoke tests don't need (the retry/preprocess paths are
       # covered by the fast `preprocess` unit tests in `cargo test --workspace`).
       - name: Native OCR e2e test (real ocrs/rten models)
         env:
-          MLIS_OCR_MAX_PASSES: "1"
-        run: cargo test -p mlis-ocr --release --test native_ocr_e2e -- --ignored
+          SYNTHPASS_OCR_MAX_PASSES: "1"
+        run: cargo test -p synthpass-ocr --release --test native_ocr_e2e -- --ignored
 
       - name: Native-rust OCR pipeline smoke test (real ocrs/rten models)
         env:
-          MLIS_OCR_MAX_PASSES: "1"
-        run: cargo test -p mlis-pipeline --release --test rust_ocr_smoke -- --ignored
+          SYNTHPASS_OCR_MAX_PASSES: "1"
+        run: cargo test -p synthpass-pipeline --release --test rust_ocr_smoke -- --ignored
 
       - name: Check the OCR backend feature builds alone
-        run: cargo check -p mlis-pipeline --no-default-features --features inferer-native,ocr-native-rust
+        run: cargo check -p synthpass-pipeline --no-default-features --features inferer-native,ocr-native-rust
 
-      # mlis-license's default build (no `vendor`) must stay signing-free —
-      # it's what mlis-cli/mlis-serve actually ship; `vendor` (the issuer
+      # synthpass-license's default build (no `vendor`) must stay signing-free —
+      # it's what synthpass-cli/synthpass-serve actually ship; `vendor` (the issuer
       # binary's signing/keygen code) is checked separately so a break in
       # either doesn't hide behind the other.
-      - name: Check mlis-license feature combinations (each must build alone)
+      - name: Check synthpass-license feature combinations (each must build alone)
         run: |
-          cargo check -p mlis-license
-          cargo check -p mlis-license --features vendor
+          cargo check -p synthpass-license
+          cargo check -p synthpass-license --features vendor
 
-  # Cross-platform proof: `mlis-ocr` (ocrs/rten) builds and tests here with
+  # Cross-platform proof: `synthpass-ocr` (ocrs/rten) builds and tests here with
   # no system OCR libraries at all — the "zero Docker/Python, genuinely pure
   # Rust" claim, exercised on macOS on every push.
   rust-portable:
@@ -114,7 +114,7 @@ jobs:
       - name: Install cmake
         run: brew install cmake
       - uses: Swatinem/rust-cache@v2
-      - name: Test default members (includes mlis-ocr)
+      - name: Test default members (includes synthpass-ocr)
         run: cargo test
 
   # Real-model native LLM checks: downloads the ~1 GB GGUF, so this is opt-in
@@ -141,10 +141,10 @@ jobs:
           echo "$MODEL_SHA256  qwen2.5-1.5b-instruct-q4_k_m.gguf" | sha256sum -c -
 
       - name: Native LLM e2e smoke test
-        run: cargo test -p mlis-llm --test native_llm_e2e -- --ignored
+        run: cargo test -p synthpass-llm --test native_llm_e2e -- --ignored
 
       - name: Parity harness (field accuracy over samples/*)
-        run: cargo test -p mlis-llm --test parity -- --ignored --nocapture
+        run: cargo test -p synthpass-llm --test parity -- --ignored --nocapture
 
   # Coverage-guided fuzzing of the mrz ingest surface (find_and_parse,
   # parse_td1/td2/td3). Opt-in like native-llm above: needs nightly + a
@@ -219,21 +219,21 @@ jobs:
           echo "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca  text-detection.rten" | sha256sum -c -
           echo "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e  text-recognition.rten" | sha256sum -c -
 
-      # `inferer-native`/`ocr-native-rust` are mlis-pipeline features, not
-      # mlis-cli/mlis-serve features — they're already on by default via
-      # mlis-pipeline's own `default = ["inferer-native", "ocr-native-rust"]`
+      # `inferer-native`/`ocr-native-rust` are synthpass-pipeline features, not
+      # synthpass-cli/synthpass-serve features — they're already on by default via
+      # synthpass-pipeline's own `default = ["inferer-native", "ocr-native-rust"]`
       # (a path dependency's default features aren't affected by
       # `--no-default-features` on the top-level packages being built), so
       # only `ocr-embedded` needs to be requested explicitly here.
       - name: Build static musl release binaries (models embedded)
-        run: cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve --features ocr-embedded
+        run: cargo zigbuild --release --target x86_64-unknown-linux-musl -p synthpass-cli -p synthpass-serve --features ocr-embedded
 
       - name: Confirm the binaries are statically linked
         run: |
-          file target/x86_64-unknown-linux-musl/release/mlis | grep -q 'statically linked'
-          file target/x86_64-unknown-linux-musl/release/mlis-serve | grep -q 'statically linked'
+          file target/x86_64-unknown-linux-musl/release/synthpass | grep -q 'statically linked'
+          file target/x86_64-unknown-linux-musl/release/synthpass-serve | grep -q 'statically linked'
 
-      # `mlis doctor`'s exit code also gates on the Tier-2 GGUF model, which
+      # `synthpass doctor`'s exit code also gates on the Tier-2 GGUF model, which
       # this job deliberately doesn't download (that ~1GB fetch is the
       # separate opt-in `native-llm` job's concern, not this one's) — so
       # assert on the OCR-specific success line rather than doctor's overall
@@ -242,14 +242,14 @@ jobs:
         run: |
           docker run --rm -v "$PWD/target/x86_64-unknown-linux-musl/release:/bin2:ro" alpine:3.20 sh -c "
             set -e
-            /bin2/mlis fingerprint
-            MLIS_LICENSE_SKIP=1 /bin2/mlis doctor || true
+            /bin2/synthpass fingerprint
+            SYNTHPASS_LICENSE_SKIP=1 /bin2/synthpass doctor || true
           " | tee /tmp/doctor-output.txt
           grep -q 'OCR (rust) detection+recognition models embedded in binary' /tmp/doctor-output.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mlis-musl-x86_64
+          name: synthpass-musl-x86_64
           path: |
-            target/x86_64-unknown-linux-musl/release/mlis
-            target/x86_64-unknown-linux-musl/release/mlis-serve
+            target/x86_64-unknown-linux-musl/release/synthpass
+            target/x86_64-unknown-linux-musl/release/synthpass-serve

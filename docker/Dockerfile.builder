@@ -1,25 +1,25 @@
-# mlis-builder — the local dev/verify-loop image for machines that lack a
+# synthpass-builder — the local dev/verify-loop image for machines that lack a
 # native cmake/clang toolchain (see docs' build-environment notes). Mirrors
 # `.github/workflows/ci.yml`'s `rust` job's apt list (source of truth for
 # system deps) plus the nightly toolchain `fuzz` needs and, as of v1.0.0, the
 # musl target + pinned Zig + cargo-zigbuild used to cross-compile the static
 # release binaries (see docs/ARCHITECTURE.md §10).
 #
-# This replaces the old ad-hoc `docker commit`-built `mlis-builder:latest` —
+# This replaces the old ad-hoc `docker commit`-built `synthpass-builder:latest` —
 # build it explicitly instead:
-#   docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+#   docker build -f docker/Dockerfile.builder -t synthpass-builder:latest .
 #
 # Usage (from repo root, Git Bash on Windows needs MSYS_NO_PATHCONV=1 to stop
 # `-w /work` from being mangled into a Windows path):
 #   MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
-#     -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
-#     -w /work mlis-builder:latest bash -c "cargo test -p mrz"
+#     -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry \
+#     -w /work synthpass-builder:latest bash -c "cargo test -p mrz"
 #
 # Cross-compiling to musl locally:
 #   MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
-#     -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
-#     -w /work mlis-builder:latest \
-#     cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve
+#     -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry \
+#     -w /work synthpass-builder:latest \
+#     cargo zigbuild --release --target x86_64-unknown-linux-musl -p synthpass-cli -p synthpass-serve
 
 FROM rust:1.96
 

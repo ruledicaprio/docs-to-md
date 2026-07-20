@@ -1,0 +1,31 @@
+[package]
+name = "synthpass-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mrz = { path = "../mrz", features = ["serde", "zeroize"] }
+synthpass-core = { path = "../synthpass-core", features = ["security"] }
+tokio = { workspace = true, features = ["fs", "sync", "rt"] }
+serde_json = "1"
+async-trait = "0.1"
+zeroize = "1"
+# Pure-Rust ocrs/rten OCR engine — the default OCR backend.
+synthpass-ocr = { path = "../synthpass-ocr", optional = true }
+# Tier-2 backend: native llama.cpp inference (synthpass-llm), in-process.
+synthpass-llm = { path = "../synthpass-llm", optional = true }
+
+[features]
+default = ["inferer-native", "ocr-native-rust"]
+# Default OCR backend: pure-Rust ocrs/rten, no external sidecar/C libs.
+ocr-native-rust = ["dep:synthpass-ocr"]
+# Tier-2 backend: native llama.cpp inference (synthpass-llm), no external sidecar.
+inferer-native = ["dep:synthpass-llm"]
+# Bake the .rten OCR models into the binary at compile time (off by default —
+# only the musl release build turns this on; see docs/ARCHITECTURE.md §10).
+ocr-embedded = ["ocr-native-rust", "synthpass-ocr/embedded-models"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
+# Re-encodes the sample JPEG to PNG/WebP for the format-coverage smoke test.
+image = { workspace = true }

@@ -1,0 +1,27 @@
+[package]
+name = "synthpass-gen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# The zero-dep ICAO 9303 checksum oracle: this crate reuses `mrz::check_digit`
+# to assemble TD3 MRZ lines (see src/mrz_line.rs) and validates its own output
+# by round-tripping through `mrz::parse_td3` in tests.
+mrz = { path = "../mrz" }
+image = { workspace = true }
+# Seeded, reproducible identity generation: same seed -> byte-identical output.
+rand = "0.10"
+rand_chacha = "0.10"
+# Glyph rasterization for VIZ/MRZ text, gated behind `embedded-fonts` (see
+# src/fonts.rs). Not the deprecated `rusttype`.
+ab_glyph = "0.2"
+
+[features]
+default = []
+# Bakes fonts/ocr-b.ttf and fonts/sans.ttf into the binary via `include_bytes!`.
+# Off by default: the fonts are not vendored (see fonts/README.md for how to
+# supply OFL-licensed fonts and build with this feature). With it off, text
+# fields render as placeholder bars in the exact layout rects instead of
+# glyphs, and the two ethics guardrails (synthetic watermark + generic
+# template) still render unconditionally either way.
+embedded-fonts = []

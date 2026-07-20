@@ -4,27 +4,36 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.2.0 "dependency diet" milestone
+## [Unreleased] — v1.2.0 "dependency diet" + SynthPass rebrand
 
-Roadmap: docs/ARCHITECTURE.md §10. Every dependency shed is surface the project no longer has
-to secure, license-audit, cross-compile, or explain to a procurement department.
+Roadmap: docs/ARCHITECTURE.md §10, docs/ROADMAP.md. Every dependency shed is surface the project
+no longer has to secure, license-audit, cross-compile, or explain to a procurement department;
+the rebrand repositions the project as a platform spanning synthetic document generation and
+extraction.
 
 ### Added
-- **Dense/bilingual-scan MRZ robustness in `mlis-ocr`.** Row-density MRZ-band isolation
+- **Dense/bilingual-scan MRZ robustness in `synthpass-ocr`.** Row-density MRZ-band isolation
   (`preprocess::mrz_band`) locks onto the monospace OCR-B block so a blind bottom-band crop no
   longer drags non-Latin visual-zone text (e.g. Hebrew) into the MRZ-constrained retry passes;
   plus glare-tolerant local-threshold and pure-Rust deskew preprocess variants. Band isolation is
   **additive and trailing** — the proven blind-crop passes still run first, so no previously
-  passing specimen regresses. A `MLIS_OCR_MAX_PASSES` / `MLIS_OCR_MAX_SECONDS` budget (defaults
-  7 passes / 45s) bounds the retry loop so a hopeless scan degrades gracefully instead of burning
-  minutes, and `MLIS_OCR_VERBOSE=1` logs per-pass timing/region counts. Zero new dependencies.
+  passing specimen regresses. A `SYNTHPASS_OCR_MAX_PASSES` / `SYNTHPASS_OCR_MAX_SECONDS` budget
+  (defaults 7 passes / 45s) bounds the retry loop so a hopeless scan degrades gracefully instead
+  of burning minutes, and `SYNTHPASS_OCR_VERBOSE=1` logs per-pass timing/region counts. Zero new
+  dependencies.
+- **New crate `synthpass-gen`:** a deterministic synthetic passport/ID factory (seeded
+  identities, TD3 MRZ emission via `mrz::format_td3`, capture-degradation profiles) and a
+  `synthpass generate` CLI subcommand — the first roadmap milestones (M1–M3) toward the
+  unified generation+extraction platform. Every output carries a mandatory synthetic
+  watermark and generic template; no real PII is ever produced, so this command has no
+  license requirement.
 
 ### Changed
 - **The required Linux CI job no longer runs ~25 min.** The two real-model OCR smoke steps
   (`native_ocr_e2e`, `rust_ocr_smoke`) assert only that OCR runs and the pipeline terminates, not
   Tier-1 accuracy, yet debug-mode rten inference on CI's 2-core runner made a single general pass
   ~5 min. Running them in `--release` collapses execution to seconds (the one-time release build
-  is cached by `rust-cache`); `MLIS_OCR_MAX_PASSES=1` additionally skips the retry loop these
+  is cached by `rust-cache`); `SYNTHPASS_OCR_MAX_PASSES=1` additionally skips the retry loop these
   smoke tests don't need. The retry/preprocess paths stay covered by the fast `preprocess` unit
   tests in `cargo test --workspace`.
 - **The browser demo is now zero-CDN.** `web/fetch-vendor.sh` fetches and SHA-256-verifies the
@@ -32,16 +41,24 @@ to secure, license-audit, cross-compile, or explain to a procurement department.
   5.1.1) into `web/vendor/` at Pages deploy time, mirroring the `.rten` pin-and-verify pattern;
   nothing is committed to git and the deployed pages make no third-party requests at all. The
   Linux CI job also drops the now-stale "incl. native OCR" from its name.
+- **Rebrand: `mlis-*` → `synthpass-*`.** The project is repositioning from a personal
+  identity-document extraction tool to **SynthPass**, a platform spanning synthetic
+  document generation *and* extraction, stewarded by **Identra**. This release renames the
+  workspace mechanically (crate directories, package names, `use` paths, the CLI/serve
+  binaries, CI, Docker, and top-level docs) with **no behavior change**: `mrz`/`mrz-wasm`
+  keep their names (see `docs/BRANDING.md`), and `MLIS_*` environment variables are now
+  `SYNTHPASS_*`. See `docs/REBRAND_MIGRATION.md` for the full crate-mapping table and
+  `docs/VISION.md` / `docs/ROADMAP.md` for where the platform is headed next.
 
 ### Removed
 - **`ocr-daemon` (Tesseract + Leptonica) and the `native-ocr` feature.** The Linux/WSL-only
   accuracy fallback's justification — parity doubt about the then-new `ocrs` engine — was closed
   by v1.1.0's measured 100% Tier-1 corpus hit rate, achieved partly by absorbing `ocr-daemon`'s
-  own preprocessing into `mlis-ocr`. Removes the last C-library OCR chain from the workspace,
-  the Tesseract packages from CI and `docker/Dockerfile.builder`, the `default-members` split
-  (the workspace is fully cross-platform again), and the musl job's now-vacuous
-  no-Tesseract negative check. `MLIS_OCR_ENGINE` survives for compatibility: any value other
-  than `rust` warns and uses the pure-Rust engine.
+  own preprocessing into `synthpass-ocr`. Removes the last C-library OCR chain from the
+  workspace, the Tesseract packages from CI and `docker/Dockerfile.builder`, the
+  `default-members` split (the workspace is fully cross-platform again), and the musl job's
+  now-vacuous no-Tesseract negative check. `SYNTHPASS_OCR_ENGINE` survives for compatibility: any
+  value other than `rust` warns and uses the pure-Rust engine.
 
 ## [1.1.0] — 2026-07-19
 

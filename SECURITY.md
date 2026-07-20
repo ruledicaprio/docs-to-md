@@ -28,15 +28,15 @@ time for a fix before any public write-up.
 
 - **Air-gapped by design.** No cloud calls in the processing path; all OCR and LLM inference run on
   the local host / loopback. No telemetry.
-- **Loopback by default.** `mlis-serve` binds `127.0.0.1`. It **refuses a non-loopback bind unless
-  `MLIS_TOKEN` is set**, and then enforces `Authorization: Bearer <token>` on every request.
-- **Transport security.** Optional rustls TLS via `MLIS_TLS_CERT` / `MLIS_TLS_KEY`. When exposed
+- **Loopback by default.** `synthpass-serve` binds `127.0.0.1`. It **refuses a non-loopback bind unless
+  `SYNTHPASS_TOKEN` is set**, and then enforces `Authorization: Bearer <token>` on every request.
+- **Transport security.** Optional rustls TLS via `SYNTHPASS_TLS_CERT` / `SYNTHPASS_TLS_KEY`. When exposed
   beyond loopback, terminate TLS (directly or via a reverse proxy) and keep the bearer token secret.
 - **PII hygiene.** Uploaded files and intermediate artifacts are deleted after each request
   (`KEEP_WORK=1` retains them only for local debugging).
-- **At-rest options.** `MLIS_AUDIT_LOG` writes a **PII-free** SHA-256 audit trail (document
-  fingerprint + method + timestamp, never names/numbers). `MLIS_KEY` (base64 32-byte AES-256-GCM)
-  encrypts the output JSON to `<input>.json.enc`; read it back with `mlis decrypt`.
+- **At-rest options.** `SYNTHPASS_AUDIT_LOG` writes a **PII-free** SHA-256 audit trail (document
+  fingerprint + method + timestamp, never names/numbers). `SYNTHPASS_KEY` (base64 32-byte AES-256-GCM)
+  encrypts the output JSON to `<input>.json.enc`; read it back with `synthpass decrypt`.
 - **Deterministic core.** Tier 1 (ICAO 9303 MRZ) is checksum-verified math, not a model — no
   hallucinated identity fields when a valid MRZ is present.
 - **Model & license integrity.** The GGUF, both OCR `.rten` weight files (or their compile-time
@@ -45,7 +45,7 @@ time for a fix before any public write-up.
 - **PII memory hardening (v0.9.0, best-effort).** The highest-value in-memory PII carriers
   (extracted fields, the AES key, raw Tier-2 output) are wiped on drop via `zeroize`. This does
   not cover every intermediate copy (`serde_json::Value` internals) or on-disk plaintext
-  artifacts (only the optional `MLIS_KEY`-encrypted output is protected at rest) — see
+  artifacts (only the optional `SYNTHPASS_KEY`-encrypted output is protected at rest) — see
   [docs/ARCHITECTURE.md §7](docs/ARCHITECTURE.md#7-security--compliance-posture) for the exact
   scope, stated plainly rather than oversold.
 - **Fuzz-tested ingest path (v0.9.0).** The untrusted-OCR-text repair logic in `mrz` (also the
@@ -60,9 +60,9 @@ time for a fix before any public write-up.
 
 ## Hardening checklist for production
 
-- [ ] Set a strong, unique `MLIS_TOKEN`.
-- [ ] Enable TLS (`MLIS_TLS_*`) or front with a TLS-terminating reverse proxy.
-- [ ] Set `MLIS_KEY` to encrypt outputs at rest; store the key in a secrets manager.
-- [ ] Enable `MLIS_AUDIT_LOG` and ship the log to your SIEM.
+- [ ] Set a strong, unique `SYNTHPASS_TOKEN`.
+- [ ] Enable TLS (`SYNTHPASS_TLS_*`) or front with a TLS-terminating reverse proxy.
+- [ ] Set `SYNTHPASS_KEY` to encrypt outputs at rest; store the key in a secrets manager.
+- [ ] Enable `SYNTHPASS_AUDIT_LOG` and ship the log to your SIEM.
 - [ ] Keep the GGUF model and containers/binaries on trusted, access-controlled hosts.
 - [ ] Run `cargo deny check advisories` in CI (no Python dependencies remain as of v0.7.5).

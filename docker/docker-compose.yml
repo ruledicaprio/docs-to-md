@@ -1,26 +1,26 @@
-# Optional container packaging for the web app. The default `mlis`/`mlis-serve`
+# Optional container packaging for the web app. The default `synthpass`/`synthpass-serve`
 # binaries need no other services: OCR defaults to the in-process `ocrs`/`rten`
-# engine (crate `mlis-ocr`) and Tier-2 inference defaults to the in-process
-# GGUF (crate `mlis-llm`). As of v0.7.5, Docker is no longer required for any
+# engine (crate `synthpass-ocr`) and Tier-2 inference defaults to the in-process
+# GGUF (crate `synthpass-llm`). As of v0.7.5, Docker is no longer required for any
 # functional code path — this compose file exists purely as a convenient way
-# to build/run the containerized `mlis-serve` image; the legacy `docling`
+# to build/run the containerized `synthpass-serve` image; the legacy `docling`
 # (PDF OCR) and `inferer` (gRPC Tier-2 sidecar) services were retired in
 # v0.7.5 along with PDF input support — see CHANGELOG.md.
 # Run from the repo root: `docker compose -f docker/docker-compose.yml up`.
-name: mlis
+name: synthpass
 
 services:
   # Web app: Tier 1 (deterministic MRZ) + Tier 2 fallback. Bearer-auth required
-  # because it binds non-loopback (change MLIS_TOKEN before exposing it).
+  # because it binds non-loopback (change SYNTHPASS_TOKEN before exposing it).
   serve:
     build:
       context: ..
       dockerfile: docker/Dockerfile.serve
     environment:
       BIND_ADDR: 0.0.0.0:8080
-      MLIS_TOKEN: change-me-in-production
+      SYNTHPASS_TOKEN: change-me-in-production
       # Optional Tier-3 hardening:
-      # MLIS_AUDIT_LOG: /data/audit.jsonl
-      # MLIS_KEY: <base64 32-byte AES-256 key>
+      # SYNTHPASS_AUDIT_LOG: /data/audit.jsonl
+      # SYNTHPASS_KEY: <base64 32-byte AES-256 key>
     ports:
       - "8080:8080"

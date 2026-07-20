@@ -14,7 +14,7 @@ libfuzzer-sys = "0.4"
 path = "../crates/mrz"
 
 # Its own workspace: keeps this crate (and its libFuzzer-only dependency
-# tree) fully detached from the main `mlis` workspace at the repo root —
+# tree) fully detached from the main synthpass workspace at the repo root —
 # `cargo test --workspace` / `cargo build --workspace` there never touch it.
 [workspace]
 members = ["."]

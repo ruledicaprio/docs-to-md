@@ -1,0 +1,27 @@
+[package]
+name = "synthpass-ocr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synthpass-core = { path = "../synthpass-core", features = ["security"] }
+# The zero-dep ICAO 9303 engine, used here only as the checksum oracle that
+# decides whether the MRZ retry passes need to run (see src/lib.rs).
+mrz = { path = "../mrz" }
+ocrs = "0.12.2"
+rten = "0.24.0"
+image = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
+
+[build-dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+
+[features]
+# Bakes both .rten weight files into the binary via `include_bytes!` instead
+# of fetching them at runtime — see build.rs and src/embedded.rs. Off by
+# default (glibc dev/CI keeps the fast runtime-download-and-cache loop); the
+# musl release build turns this on for a true air-gapped single-file binary
+# (see docs/ARCHITECTURE.md §10).
+embedded-models = []

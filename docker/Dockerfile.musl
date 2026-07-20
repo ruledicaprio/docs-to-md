@@ -1,4 +1,4 @@
-# Packages the pre-built static x86_64-unknown-linux-musl `mlis`/`mlis-serve`
+# Packages the pre-built static x86_64-unknown-linux-musl `synthpass`/`synthpass-serve`
 # binaries (built via `cargo zigbuild`, see the `rust-musl` CI job and
 # docs/ARCHITECTURE.md §10) into a minimal `FROM scratch` image — the closest
 # Docker equivalent to the "copy one file to an air-gapped machine" story.
@@ -12,17 +12,17 @@
 # This is NOT a multi-stage build from source — it expects the binaries to
 # already exist locally (copy them out of a `rust-musl` CI artifact, or build
 # them yourself via docker/Dockerfile.builder's cargo-zigbuild recipe) at:
-#   target/x86_64-unknown-linux-musl/release/mlis
-#   target/x86_64-unknown-linux-musl/release/mlis-serve
+#   target/x86_64-unknown-linux-musl/release/synthpass
+#   target/x86_64-unknown-linux-musl/release/synthpass-serve
 #
 # Build:
-#   docker build -f docker/Dockerfile.musl -t mlis-musl:v1.0.0 .
+#   docker build -f docker/Dockerfile.musl -t synthpass-musl:v1.0.0 .
 # Run:
-#   docker run --rm -p 8080:8080 -e MLIS_TOKEN=... mlis-musl:v1.0.0
+#   docker run --rm -p 8080:8080 -e SYNTHPASS_TOKEN=... synthpass-musl:v1.0.0
 
 FROM scratch
-COPY target/x86_64-unknown-linux-musl/release/mlis /mlis
-COPY target/x86_64-unknown-linux-musl/release/mlis-serve /mlis-serve
+COPY target/x86_64-unknown-linux-musl/release/synthpass /synthpass
+COPY target/x86_64-unknown-linux-musl/release/synthpass-serve /synthpass-serve
 ENV BIND_ADDR=0.0.0.0:8080
 EXPOSE 8080
-ENTRYPOINT ["/mlis-serve"]
+ENTRYPOINT ["/synthpass-serve"]

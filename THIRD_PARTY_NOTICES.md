@@ -23,7 +23,7 @@ All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 >
 > **Build-only tooling, never shipped in any binary** (v1.0.0's musl cross-compile path):
 > `cargo-zigbuild` (MIT) and the [Zig](https://ziglang.org/) toolchain (MIT) are used at build
-> time to cross-compile `mlis`/`mlis-serve` for `x86_64-unknown-linux-musl` — neither is a
+> time to cross-compile `synthpass`/`synthpass-serve` for `x86_64-unknown-linux-musl` — neither is a
 > runtime or compile-time dependency of the crates themselves, so neither appears in the table
 > below (same reasoning as the Rust toolchain itself not appearing there).
 

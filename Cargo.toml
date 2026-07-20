@@ -3,13 +3,14 @@ resolver = "2"
 members = [
     "crates/mrz",
     "crates/mrz-wasm",
-    "crates/mlis-core",
-    "crates/mlis-llm",
-    "crates/mlis-ocr",
-    "crates/mlis-license",
-    "crates/mlis-pipeline",
-    "crates/mlis-cli",
-    "crates/mlis-serve",
+    "crates/synthpass-gen",
+    "crates/synthpass-core",
+    "crates/synthpass-llm",
+    "crates/synthpass-ocr",
+    "crates/synthpass-license",
+    "crates/synthpass-pipeline",
+    "crates/synthpass-cli",
+    "crates/synthpass-serve",
 ]
 
 [workspace.package]

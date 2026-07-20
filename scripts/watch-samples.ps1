@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
 Watches samples/ for new specimen files and instantly runs the MRZ/specimen
-checker (crates/mlis-ocr/examples/check_sample.rs) against each one via the
-mlis-builder Docker image, then opens the image so you can eyeball it.
+checker (crates/synthpass-ocr/examples/check_sample.rs) against each one via the
+synthpass-builder Docker image, then opens the image so you can eyeball it.
 
 This assists the human vetting process in CONTRIBUTING.md's "Adding a
 corpus specimen" checklist -- it does NOT replace it. A checker HIT plus a
@@ -49,9 +49,9 @@ while ($true) {
         Write-Host "`n=== New sample: $($file.Name) ===" -ForegroundColor Yellow
 
         docker run --rm -v "${repoRoot}:/work" `
-            -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry `
-            -w /work mlis-builder:latest `
-            cargo run -p mlis-ocr --release --example check_sample -- "samples/$($file.Name)"
+            -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry `
+            -w /work synthpass-builder:latest `
+            cargo run -p synthpass-ocr --release --example check_sample -- "samples/$($file.Name)"
 
         Start-Process $file.FullName
     }

@@ -1,4 +1,4 @@
-# mlis-serve — axum web app: Tier 1 deterministic MRZ + Tier 2 in-process LLM
+# synthpass-serve — axum web app: Tier 1 deterministic MRZ + Tier 2 in-process LLM
 # fallback + in-process pure-Rust OCR. Multi-stage: build with the full
 # toolchain, ship a slim runtime. No Docker/Python dependencies at runtime —
 # everything in this image's build is in-process (see CHANGELOG.md, v0.7.5;
@@ -11,14 +11,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p mlis-serve
+RUN cargo build --release -p synthpass-serve
 
 FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/release/mlis-serve /usr/local/bin/mlis-serve
-# Container bind is non-loopback, so MLIS_TOKEN is required (set in compose).
+COPY --from=build /src/target/release/synthpass-serve /usr/local/bin/synthpass-serve
+# Container bind is non-loopback, so SYNTHPASS_TOKEN is required (set in compose).
 ENV BIND_ADDR=0.0.0.0:8080
 EXPOSE 8080
-CMD ["mlis-serve"]
+CMD ["synthpass-serve"]

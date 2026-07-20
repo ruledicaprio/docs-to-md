@@ -11,7 +11,7 @@ scraped or stored.
 
 Tier-1 MRZ checksum/parsing logic itself is ICAO-9303-generic and not special-cased per
 country — a HIT here reflects real-world OCR/format validation on an actual specimen,
-not new per-country code. `scripts/watch-samples.ps1` + `mlis-ocr`'s `check_sample`
+not new per-country code. `scripts/watch-samples.ps1` + `synthpass-ocr`'s `check_sample`
 example give an instant first-pass check when a new candidate specimen is dropped into
 `samples/` — see CONTRIBUTING.md.
 
