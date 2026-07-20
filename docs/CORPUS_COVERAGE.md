@@ -11,17 +11,20 @@ scraped or stored.
 
 Tier-1 MRZ checksum/parsing logic itself is ICAO-9303-generic and not special-cased per
 country — a HIT here reflects real-world OCR/format validation on an actual specimen,
-not new per-country code.
+not new per-country code. `scripts/watch-samples.ps1` + `mlis-ocr`'s `check_sample`
+example give an instant first-pass check when a new candidate specimen is dropped into
+`samples/` — see CONTRIBUTING.md.
 
 ## Summary
 
 | Status | Countries |
 |---|---|
-| Tier-1 HIT in `mrz_corpus.rs` | 8 |
+| Tier-1 HIT in `mrz_corpus.rs` | 11 |
 | Known MISS (documented, e.g. physically redacted specimen) | 1 |
-| Specimen in `samples/`, not yet wired into the automated corpus | 10 |
+| Negative-control specimen only (no MRZ on that page/document) | 1 |
+| Specimen in `samples/`, not yet wired into the automated corpus | 9 |
 | Candidate specimen rejected per the vetting checklist | 1 |
-| No specimen yet | 209 |
+| No specimen yet | 207 |
 | **Total tracked codes** | **230** |
 
 ## Full table
@@ -90,7 +93,7 @@ not new per-country code.
 | BLZ | Belize | -- | No specimen yet | -- |
 | BOL | Bolivia | -- | No specimen yet | -- |
 | BRA | Brazil | -- | No specimen yet | -- |
-| CAN | Canada | Passport | Specimen in samples/, not wired | Public-domain specimen |
+| CAN | Canada | Passport | HIT (x3 specimens) | Contributor-supplied specimens (SPECIMEN watermark) |
 | CHL | Chile | -- | No specimen yet | -- |
 | COL | Colombia | -- | No specimen yet | -- |
 | CRI | Costa Rica | -- | No specimen yet | -- |
@@ -206,9 +209,9 @@ not new per-country code.
 | RUS | Russian Federation | -- | No specimen yet | -- |
 | SMR | San Marino | -- | No specimen yet | -- |
 | SRB | Serbia | Passport, ID card (TD1) | HIT (+ negative control) | Public-domain specimens |
-| SVK | Slovakia | -- | No specimen yet | -- |
+| SVK | Slovakia | Passport, Service Passport | HIT (x2) + negative control | Contributor-supplied specimens (Specimen/Vzorka placeholder name) |
 | SVN | Slovenia | ID card (TD1) | HIT (+ negative control) | Public-domain specimen |
-| ESP | Spain | -- | No specimen yet | -- |
+| ESP | Spain | Passport | HIT (x2) | Contributor-supplied specimens (ESPECIMEN watermark / placeholder name) |
 | SWE | Sweden | -- | No specimen yet | -- |
 | CHE | Switzerland | -- | No specimen yet | -- |
 | UKR | Ukraine | -- | No specimen yet | -- |

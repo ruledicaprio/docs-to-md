@@ -27,6 +27,13 @@ const CORPUS: &[(&str, &str)] = &[
     ("Vietnam_Passport_Specimen.webp", "E00000000"),
     ("Oman_Passport_Specimen.jpg", "JL5989824"),
     ("United_Arab_Emirates_Passport_Specimen.jpg", "ZK8K81404"),
+    ("Canada_Passport_Specimen.jpg", "ZE001355"),
+    ("Canada_Passport_Specimen_2.jpg", "P001756ZA"),
+    ("Canada_Passport_Specimen_3.webp", "P001678ZA"),
+    ("Slovakia_Passport_Specimen_2.png", "P0000000"),
+    ("Slovakia_Passport_Specimen_3.jpg", "XE7207436"),
+    ("Spain_Passport_Specimen.webp", "ZAB000221"),
+    ("Spain_Passport_Specimen_2.jpg", "PA000000"),
     // Known-MISS baseline (see Phase 0 of the multiscript-MRZ-robustness
     // plan), NOT a real ground-truth doc number: this specimen is a
     // publicly-posted "redacted sample" scan whose surname/given-name/
@@ -52,6 +59,9 @@ const NEGATIVE: &[&str] = &[
     "BulgariaID_face.png",
     "SerbianID_face.png",
     "Slovenian_ID_Card_2022_-_Front.jpg",
+    // Genuine Slovak passport specimen, but this particular crop doesn't
+    // include the bottom MRZ strip at all -- correctly must not validate.
+    "Slovakia_Passport_Specimen.webp",
 ];
 
 fn main() {
