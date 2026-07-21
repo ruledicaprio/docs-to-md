@@ -11,8 +11,31 @@
 //! once and exercises both `extract` and `extract_stream` against it, rather
 //! than one `NativeLlm` per `#[test]`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use synthpass_llm::NativeLlm;
+
+/// Locates `name` (a bare filename, no path) anywhere under `samples/`,
+/// searching recursively — so this survives `samples/` being reorganized
+/// into continent/class subfolders without every call site needing the
+/// exact subpath hardcoded.
+fn find_sample(name: &str) -> PathBuf {
+    fn search(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|f| f.to_str()) == Some(name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    search(&repo_root.join("samples"), name)
+        .unwrap_or_else(|| panic!("sample file not found anywhere under samples/: {name}"))
+}
 
 #[test]
 #[ignore]
@@ -27,11 +50,8 @@ fn native_llm_extracts_via_unary_and_streaming_calls() {
 
     let llm = NativeLlm::load(&model_path, 2048).expect("model loads");
 
-    let markdown = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../samples/Croatian_passport_data_page.md"),
-    )
-    .expect("sample markdown exists");
+    let markdown = std::fs::read_to_string(find_sample("Croatian_passport_data_page.md"))
+        .expect("sample markdown exists");
 
     let extraction = llm.extract(&markdown).expect("unary extraction succeeds");
     assert_eq!(extraction.extraction_method, "llm");

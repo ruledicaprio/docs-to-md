@@ -75,7 +75,7 @@ fn main() {
 
     let mut hits = 0usize;
     for (file, expected_doc) in CORPUS {
-        let path = root.join("samples").join(file);
+        let path = find_sample(file);
         let started = std::time::Instant::now();
         let text = match ocr.recognize(&path) {
             Ok(t) => t,
@@ -127,7 +127,7 @@ fn main() {
 
     println!("\nNegative controls (no MRZ present — must not validate):");
     for file in NEGATIVE {
-        let path = root.join("samples").join(file);
+        let path = find_sample(file);
         let started = std::time::Instant::now();
         let text = match ocr.recognize(&path) {
             Ok(t) => t,
@@ -154,4 +154,26 @@ fn repo_root() -> PathBuf {
         .nth(2)
         .expect("workspace root")
         .to_path_buf()
+}
+
+/// Locates `name` (a bare filename, no path) anywhere under `samples/`,
+/// searching recursively — so this survives `samples/` being reorganized
+/// into continent/class subfolders without every `CORPUS`/`NEGATIVE` entry
+/// needing its exact subpath hardcoded.
+fn find_sample(name: &str) -> PathBuf {
+    fn search(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|f| f.to_str()) == Some(name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    search(&repo_root().join("samples"), name)
+        .unwrap_or_else(|| panic!("sample file not found anywhere under samples/: {name}"))
 }

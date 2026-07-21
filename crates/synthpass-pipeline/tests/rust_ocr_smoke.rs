@@ -17,10 +17,33 @@
 //! tier) rather than an OCR-stage error.
 
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use synthpass_core::Extraction;
 use synthpass_pipeline::{InferBackend, Pipeline, ProcessEvent, RustOcrEngine};
 use tokio::sync::mpsc;
+
+/// Locates `name` (a bare filename, no path) anywhere under `samples/`,
+/// searching recursively — so this survives `samples/` being reorganized
+/// into continent/class subfolders without every call site needing the
+/// exact subpath hardcoded.
+fn find_sample(name: &str) -> PathBuf {
+    fn search(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|f| f.to_str()) == Some(name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    search(&repo_root.join("samples"), name)
+        .unwrap_or_else(|| panic!("sample file not found anywhere under samples/: {name}"))
+}
 
 /// A trivial Tier-2 backend so this test can complete even when Tier 1
 /// misses (see module docs) — this test isn't about Tier-2 accuracy.
@@ -60,7 +83,7 @@ async fn rust_ocr_engine_reaches_a_terminal_pipeline_result() {
 
     // Copy the sample into a scratch dir so this test's `.md`/`.json` output
     // never lands in the tracked `samples/` directory.
-    let src = repo_root.join("samples/Croatian_passport_data_page.jpg");
+    let src = find_sample("Croatian_passport_data_page.jpg");
     let dst = std::env::temp_dir().join(format!(
         "synthpass-pipeline-rust-ocr-smoke-{}.jpg",
         std::process::id()
@@ -97,7 +120,7 @@ async fn rust_ocr_engine_reaches_a_terminal_pipeline_result() {
             from https://ocrs-models.s3-accelerate.amazonaws.com/"]
 async fn rust_ocr_engine_handles_common_phone_image_formats() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let src = repo_root.join("samples/Croatian_passport_data_page.jpg");
+    let src = find_sample("Croatian_passport_data_page.jpg");
     let img = image::open(&src).expect("sample image decodes");
 
     for (format, ext) in [

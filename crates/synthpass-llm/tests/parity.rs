@@ -15,9 +15,32 @@
 //! equality per file. A regression that tanks the match rate is the signal to
 //! watch for — not any single field on any single document.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use synthpass_core::Extraction;
 use synthpass_llm::NativeLlm;
+
+/// Locates `name` (a bare filename, no path) anywhere under `samples/`,
+/// searching recursively — so this survives `samples/` being reorganized
+/// into continent/class subfolders without every `FIXTURES` entry needing
+/// its exact subpath hardcoded. Returns `None` rather than panicking, since
+/// callers here treat a missing fixture as "skip", not a hard failure.
+fn find_sample(name: &str) -> Option<PathBuf> {
+    fn search(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|f| f.to_str()) == Some(name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    search(&repo_root.join("samples"), name)
+}
 
 /// Samples with both OCR Markdown and a ground-truth extraction fixture.
 const FIXTURES: &[&str] = &[
@@ -85,20 +108,18 @@ fn native_llm_field_accuracy_over_sample_set() {
         "model not found at {} — download it first",
         model_path.display()
     );
-    let samples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
-
     let llm = NativeLlm::load(&model_path, 2048).expect("model loads");
 
     let mut total = 0usize;
     let mut matched = 0usize;
 
     for name in FIXTURES {
-        let md_path = samples_dir.join(format!("{name}.md"));
-        let json_path = samples_dir.join(format!("{name}.json"));
-        if !md_path.exists() || !json_path.exists() {
+        let (Some(md_path), Some(json_path)) =
+            (find_sample(&format!("{name}.md")), find_sample(&format!("{name}.json")))
+        else {
             eprintln!("skipping {name}: missing fixture files");
             continue;
-        }
+        };
 
         let markdown = std::fs::read_to_string(&md_path).expect("markdown reads");
         // Ground-truth fixtures predate `extraction_method` being required;

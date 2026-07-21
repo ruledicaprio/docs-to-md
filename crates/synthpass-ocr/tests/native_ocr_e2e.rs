@@ -5,7 +5,7 @@
 //! cargo test -p synthpass-ocr --test native_ocr_e2e -- --ignored
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use synthpass_ocr::NativeOcr;
 
 fn require_models() -> (PathBuf, PathBuf) {
@@ -20,14 +20,36 @@ fn require_models() -> (PathBuf, PathBuf) {
     (detection_path, recognition_path)
 }
 
+/// Locates `name` (a bare filename, no path) anywhere under `samples/`,
+/// searching recursively — so this survives `samples/` being reorganized
+/// into continent/class subfolders without every call site needing the
+/// exact subpath hardcoded.
+fn find_sample(name: &str) -> PathBuf {
+    fn search(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|f| f.to_str()) == Some(name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    search(&repo_root.join("samples"), name)
+        .unwrap_or_else(|| panic!("sample file not found anywhere under samples/: {name}"))
+}
+
 #[test]
 #[ignore]
 fn native_ocr_recognizes_mrz_fragment_from_sample_passport() {
     let (detection_path, recognition_path) = require_models();
     let ocr = NativeOcr::load(&detection_path, &recognition_path).expect("models load");
 
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let image_path = repo_root.join("samples/Croatian_passport_data_page.jpg");
+    let image_path = find_sample("Croatian_passport_data_page.jpg");
     let text = ocr.recognize(&image_path).expect("recognition succeeds");
 
     assert!(!text.is_empty(), "expected non-empty OCR output");
@@ -54,8 +76,7 @@ fn native_ocr_recovers_mrz_from_a_180_degree_rotated_page() {
     let (detection_path, recognition_path) = require_models();
     let ocr = NativeOcr::load(&detection_path, &recognition_path).expect("models load");
 
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source_path = repo_root.join("samples/Croatian_passport_data_page.jpg");
+    let source_path = find_sample("Croatian_passport_data_page.jpg");
     let upright = image::open(&source_path)
         .expect("sample image opens")
         .into_rgb8();

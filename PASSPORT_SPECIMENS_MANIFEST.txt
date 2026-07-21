@@ -1,0 +1,77 @@
+================================================================================
+PASSPORT SPECIMEN COLLECTION - HANDOFF MANIFEST
+================================================================================
+Generated: 2026-07-21
+Collection Status: COMPLETE
+
+REPOSITORY LOCATION:
+  /d/Users/Rusmir/multi-level-id-strip/samples/
+
+TOTAL FILES COLLECTED: 112 passport specimen files
+
+COLLECTION BREAKDOWN:
+  - Raster formats (JPG/PNG/WEBP): 110 files [OPTIMAL FOR OCR]
+  - Vector formats (SVG): 2 files
+  - Cover/Front pages: 79 files
+  - Alternative pages (Biodata/Data/Interior/Info): 19 files
+
+GEOGRAPHIC COVERAGE:
+  - Approximately 170+ unique countries/territories represented
+  - Complete Wikipedia "Passports by country" category coverage (A-Z)
+  - Multiple document variants for major countries
+
+NAMING CONVENTION:
+  Primary:      Country_Passport_Specimen.ext
+  Variants:     Country_Passport_Specimen_[TYPE].ext
+  
+  Types:
+    _Biodata      = Biodata/biographical data page
+    _Datapage     = Machine-readable data page  
+    _Interior     = Interior/inside pages
+    _Identity     = Identity information page
+    _Infopage     = Information page
+    _Inside       = Inside cover
+
+DOCUMENT TYPES INCLUDED:
+  1. Passport front covers (contemporary biometric passports)
+  2. Biodata/biographical data pages (19 files)
+  3. Data pages with MRZ (Machine Readable Zone)
+  4. Interior/inside pages
+  5. Identity information pages
+  6. Historical passport variants
+
+OPTIMAL FOR:
+  - OCR pipeline training (raster files)
+  - Document classification models
+  - MRZ extraction and validation
+  - Multi-page passport processing
+  - Biometric passport feature detection
+
+QUALITY NOTES:
+  - All specimens sourced from Wikipedia's official Wikimedia Commons
+  - Prioritized official/contemporary biometric passport designs
+  - Avoided supplementary images (visa maps, flags, etc.)
+  - Raster formats selected for machine learning readiness
+
+COUNTRIES WITH RICHEST COVERAGE (Multiple variants):
+  - Germany (3 types): cover, card data page, interior
+  - Italy (4 files): cover, biodata, inside cover
+  - Czech Republic (3 types): cover, data page, inner pages
+  - Austria (2 types): cover, biodata page
+  - Poland (2 types): cover, data page
+  - And 14+ others with 2+ variants
+
+NEXT STEPS FOR OPUS:
+  1. Validate document quality and OCR readiness
+  2. Assess coverage for model training
+  3. Identify any additional missing countries/document types
+  4. Prepare pipeline integration
+  5. Document any SVG conversion needs
+
+REPOSITORY DETAILS:
+  Base path: D:\Users\Rusmir\multi-level-id-strip\
+  Samples directory: ./samples/
+  Filter pattern: *_Passport_Specimen*
+  
+HANDOFF COMPLETE
+================================================================================
