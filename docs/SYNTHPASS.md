@@ -125,3 +125,18 @@ tracked as follow-up work, not a blocker.
 Tier-1 hit rate against `synthpass-gen`'s degraded capture profiles. See
 [`ADVERSARIAL.md`](ADVERSARIAL.md) for what each profile simulates and why only `clean` is
 CI-gated today.
+
+## Nightly data collection (`bench-data` branch)
+
+`.github/workflows/bench-data-collection.yml` runs `synthpass-bench --profile all` once a day
+against a fresh seed window (never the same documents as the CI gate or a previous day's run) and
+appends the flattened per-document outcomes — `seed`, `profile`, `hit`, `reason`, `elapsed_ms` — as
+JSON lines to `dataset.jsonl` on a dedicated `bench-data` branch (not `main`, which is protected;
+this workflow pushes there directly, unattended, no PR per run).
+
+This is data collection only — nothing consumes this dataset yet. Because `synthpass-gen`'s
+output is fully determined by `seed`, each row is enough on its own to regenerate the exact
+document and its degrade parameters later; there was no need to also persist the parameters. The
+intent is to build up a corpus of (parameters → outcome) examples ahead of any future auto-tuning
+or RL-style work on the generator's degrade settings — that tuning logic doesn't exist yet and is
+tracked separately.

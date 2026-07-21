@@ -1,0 +1,115 @@
+name: Bench data collection
+
+# Nightly, unattended data collection for future RL/auto-tuning work on
+# synthpass-gen's degrade parameters. This workflow does NOT tune anything —
+# it only runs the existing M4 `synthpass-bench` corpus runner against a
+# fresh, never-before-seen seed range each day and appends the per-document
+# (seed, profile, hit/miss, reason) outcomes to a growing dataset. Because
+# generation is fully deterministic from `seed`, that's enough for a future
+# training/tuning loop to reconstruct the exact document and its degrade
+# parameters on demand — no need to persist parameters redundantly here.
+#
+# Writes to a dedicated `bench-data` branch (not `main`, which is protected —
+# see CONTRIBUTING.md) so this can push automatically without a PR per run.
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # ~daily, off the hour to avoid GitHub's cron rush
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Documents to check this run"
+        default: "200"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bench-data-collection
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect bench data (clean + degraded profiles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config clang libclang-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache OCR .rten models
+        uses: actions/cache@v5
+        with:
+          path: |
+            text-detection.rten
+            text-recognition.rten
+          key: ocrs-rten-models-v1
+
+      - name: Download + checksum-verify the OCR .rten models
+        run: |
+          for f in text-detection.rten text-recognition.rten; do
+            if [ ! -f "$f" ]; then
+              curl -fL --retry 3 -o "$f" "https://ocrs-models.s3-accelerate.amazonaws.com/$f"
+            fi
+          done
+          echo "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca  text-detection.rten" | sha256sum -c -
+          echo "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e  text-recognition.rten" | sha256sum -c -
+
+      # A fresh, monotonically-increasing seed window each day (days since
+      # epoch * count) so daily runs cover new documents instead of
+      # re-measuring the same corpus the M4 CI gate already exercises.
+      - name: Pick today's seed window
+        id: seed
+        run: |
+          count="${{ github.event.inputs.count || '200' }}"
+          days_since_epoch=$(( $(date -u +%s) / 86400 ))
+          seed_start=$(( days_since_epoch * count ))
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "seed_start=$seed_start" >> "$GITHUB_OUTPUT"
+
+      - name: Run synthpass-bench (all profiles, round-robin)
+        run: |
+          cargo run -p synthpass-bench --release --bin synthpass-bench -- \
+            --count ${{ steps.seed.outputs.count }} \
+            --seed ${{ steps.seed.outputs.seed_start }} \
+            --profile all \
+            --out bench-report.json
+
+      - name: Checkout or create the bench-data branch
+        run: |
+          git fetch origin bench-data || true
+          if git ls-remote --exit-code --heads origin bench-data >/dev/null 2>&1; then
+            git worktree add data-branch origin/bench-data
+            cd data-branch && git checkout -B bench-data
+          else
+            git worktree add --detach data-branch
+            cd data-branch
+            git checkout --orphan bench-data
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+      - name: Flatten today's report into the dataset and commit
+        run: |
+          jq -c --arg sha "$GITHUB_SHA" \
+            '.timestamp_unix as $ts | .results[] | {run_timestamp_unix: $ts, git_sha: $sha, seed, profile, hit, reason: (.reason // null), elapsed_ms}' \
+            bench-report.json >> data-branch/dataset.jsonl
+
+          cd data-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dataset.jsonl
+          if git diff --cached --quiet; then
+            echo "no new rows, nothing to commit"
+          else
+            total_rows=$(wc -l < dataset.jsonl)
+            git commit -m "data: append run (seed ${{ steps.seed.outputs.seed_start }}, count ${{ steps.seed.outputs.count }}) — ${total_rows} rows total"
+            git push origin bench-data
+          fi
