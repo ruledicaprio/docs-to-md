@@ -34,14 +34,22 @@ fn default_schema_version() -> u32 {
     SCHEMA_VERSION_V2
 }
 
-/// Flat heuristic confidence the v1→v2 lift assigns to Tier-2 (LLM) fields.
-/// Honest by construction: an LLM-extracted field is *plausible*, not proven.
-/// M5 (`docs/V2-DESIGN.md` §8) replaces this flat default with scores derived
-/// from GBNF parse cleanliness + field-level validators.
+/// Flat heuristic confidence the v1→v2 lift assigns to a Tier-2 (LLM) field
+/// when there's no signal either way (the field is absent). Honest by
+/// construction: an LLM-extracted field is *plausible*, not proven.
 pub const LLM_HEURISTIC_CONFIDENCE: f32 = 0.5;
 
 /// Extraction-confidence vocabulary: Tier-1 checksum-proven fields.
 const PROVEN: f32 = 1.0;
+
+/// Present and structurally plausible (Tier-2 heuristic, upgraded from
+/// [`LLM_HEURISTIC_CONFIDENCE`]).
+const PLAUSIBLE: f32 = 0.65;
+
+/// Present but structurally implausible (Tier-2 heuristic, downgraded from
+/// [`LLM_HEURISTIC_CONFIDENCE`]) — still surfaced to the caller rather than
+/// discarded; a wrong-looking value is still the model's best answer.
+const IMPLAUSIBLE: f32 = 0.3;
 
 /// A single extracted identity / travel document record, schema v2.
 ///
@@ -382,6 +390,77 @@ impl From<Extraction> for ExtractionV2 {
     }
 }
 
+/// `true` iff `s` is 3 uppercase ASCII letters — the ICAO country-code
+/// *shape*, not full ISO-3166-1 table membership (a table check would need
+/// `synthpass-core` to depend on `mrz`'s country list, coupling two crates
+/// that aren't coupled today; this stays a soft heuristic, not an
+/// authoritative check).
+fn looks_like_country_code(s: &str) -> bool {
+    s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// `true` iff `s` is a structurally sane `YYYY-MM-DD` date: a plausible
+/// year, month `1..=12`, day `1..=31`. Deliberately not calendar-exact (no
+/// leap-year/days-in-month table) — this is a soft heuristic score, not the
+/// Tier-1 checksum proof.
+fn looks_like_a_date(s: &str) -> bool {
+    let Some((y, rest)) = s.split_once('-') else {
+        return false;
+    };
+    let Some((m, d)) = rest.split_once('-') else {
+        return false;
+    };
+    let Ok(year) = y.parse::<u32>() else {
+        return false;
+    };
+    let Ok(month) = m.parse::<u32>() else {
+        return false;
+    };
+    let Ok(day) = d.parse::<u32>() else {
+        return false;
+    };
+    (1900..=2999).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
+/// Scores each field independently against a cheap structural-sanity check,
+/// so a Tier-2 (LLM) extraction's confidence reflects which fields actually
+/// look right rather than one flat number for the whole record. Absent
+/// fields (`None`) carry no signal either way and stay at
+/// [`LLM_HEURISTIC_CONFIDENCE`] — this makes an all-`None` input degrade to
+/// exactly [`FieldConfidence::llm_heuristic`], the previous flat behavior.
+///
+/// GBNF-constrained decoding (M5 §8) will eventually replace this with
+/// scores derived from parse cleanliness; until then, this is the honest
+/// heuristic triage available from the raw extracted strings alone.
+fn heuristic_field_confidence(v1: &Extraction) -> FieldConfidence {
+    fn score(value: &Option<String>, plausible: impl FnOnce(&str) -> bool) -> f32 {
+        match value.as_deref().map(str::trim) {
+            None | Some("") => LLM_HEURISTIC_CONFIDENCE,
+            Some(v) if plausible(v) => PLAUSIBLE,
+            Some(_) => IMPLAUSIBLE,
+        }
+    }
+
+    FieldConfidence {
+        document_type: score(&v1.document_type, |v| {
+            matches!(v, "P" | "I" | "A" | "C" | "V")
+        }),
+        issuing_country: score(&v1.issuing_country, looks_like_country_code),
+        document_number: score(&v1.document_number, |v| {
+            (3..=20).contains(&v.len()) && v.chars().all(|c| c.is_ascii_alphanumeric())
+        }),
+        surname: score(&v1.surname, |v| !v.is_empty()),
+        given_names: score(&v1.given_names, |v| !v.is_empty()),
+        nationality: score(&v1.nationality, looks_like_country_code),
+        date_of_birth: score(&v1.date_of_birth, looks_like_a_date),
+        sex: score(&v1.sex, |v| matches!(v, "M" | "F" | "X")),
+        date_of_expiry: score(&v1.date_of_expiry, looks_like_a_date),
+        // No real sanity signal beyond presence/absence for an optional,
+        // format-varying field — don't invent one.
+        personal_number: LLM_HEURISTIC_CONFIDENCE,
+    }
+}
+
 impl From<&Extraction> for ExtractionV2 {
     /// Lift a v1 record into v2, deriving what v1 never recorded:
     ///
@@ -389,9 +468,10 @@ impl From<&Extraction> for ExtractionV2 {
     ///   `mrz-deterministic` → all 1.0 + [`Provenance::MrzChecksum`];
     ///   `mrz-wasm-client` → all 1.0 + [`Provenance::WasmClient`]; `llm` (and
     ///   any unrecognized value — the lift stays total rather than panicking
-    ///   on producer drift) → [`LLM_HEURISTIC_CONFIDENCE`] +
-    ///   [`Provenance::Llm`] with `model: "unknown"` (the lift has no access
-    ///   to the backend; the pipeline re-stamps the real model id).
+    ///   on producer drift) → per-field heuristic scores (see
+    ///   [`heuristic_field_confidence`]) + [`Provenance::Llm`] with
+    ///   `model: "unknown"` (the lift has no access to the backend; the
+    ///   pipeline re-stamps the real model id).
     /// - **document class** is inferred from the MRZ document code; the MRZ
     ///   format is guessed from the raw zone's line shape (the pipeline's
     ///   Tier-1 path overwrites both with exact values).
@@ -405,7 +485,7 @@ impl From<&Extraction> for ExtractionV2 {
             "mrz-deterministic" => (FieldConfidence::proven(), Provenance::MrzChecksum),
             "mrz-wasm-client" => (FieldConfidence::proven(), Provenance::WasmClient),
             _ => (
-                FieldConfidence::llm_heuristic(),
+                heuristic_field_confidence(v1),
                 Provenance::Llm {
                     model: "unknown".to_string(),
                 },
@@ -527,9 +607,35 @@ mod tests {
                 model: "unknown".into()
             }
         );
-        assert_eq!(v2.confidence, FieldConfidence::llm_heuristic());
+        // `surname` is present and structurally plausible, so it's scored
+        // above the flat baseline; every absent field stays at the baseline.
+        assert!(v2.confidence.surname > LLM_HEURISTIC_CONFIDENCE);
+        assert_eq!(v2.confidence.document_type, LLM_HEURISTIC_CONFIDENCE);
+        assert_eq!(v2.confidence.document_number, LLM_HEURISTIC_CONFIDENCE);
+        assert_eq!(v2.confidence.personal_number, LLM_HEURISTIC_CONFIDENCE);
         assert!(!v2.confidence.all_proven());
         assert!(v2.mrz.is_none(), "no MRZ on the Tier-2 path");
+    }
+
+    #[test]
+    fn lift_from_llm_scores_each_field_independently() {
+        let mut v1 = Extraction::default();
+        v1.document_type = Some("P".into()); // plausible
+        v1.issuing_country = Some("USA".into()); // plausible
+        v1.date_of_birth = Some("1990-05-14".into()); // plausible
+        v1.date_of_expiry = Some("not-a-date".into()); // implausible
+        v1.sex = Some("Z".into()); // implausible
+        v1.extraction_method = "llm".into();
+        let v2 = ExtractionV2::from(v1);
+
+        assert_eq!(v2.confidence.document_type, PLAUSIBLE);
+        assert_eq!(v2.confidence.issuing_country, PLAUSIBLE);
+        assert_eq!(v2.confidence.date_of_birth, PLAUSIBLE);
+        assert_eq!(v2.confidence.date_of_expiry, IMPLAUSIBLE);
+        assert_eq!(v2.confidence.sex, IMPLAUSIBLE);
+        // personal_number never moves regardless of presence/value — no real
+        // sanity signal exists for it beyond presence/absence.
+        assert_eq!(v2.confidence.personal_number, LLM_HEURISTIC_CONFIDENCE);
     }
 
     #[test]
@@ -547,7 +653,12 @@ mod tests {
         v1.extraction_method = "some-future-producer".into();
         let v2 = ExtractionV2::from(v1);
         // Unrecognized producers degrade to the least-confident reading
-        // rather than guessing provenance they don't have.
+        // rather than guessing provenance they don't have. `Extraction::
+        // default()` leaves every scalar field `None`, so every field's
+        // heuristic score degrades to the flat baseline here too —
+        // intentional (an all-absent record shouldn't magically score
+        // better than the pre-per-field-scoring flat behavior); don't
+        // "fix" this test if it starts failing without checking why.
         assert!(matches!(v2.provenance, Provenance::Llm { .. }));
         assert_eq!(v2.confidence, FieldConfidence::llm_heuristic());
     }
