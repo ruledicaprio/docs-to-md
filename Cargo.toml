@@ -19,7 +19,7 @@ version = "1.1.0"
 edition = "2021"
 authors = ["Rusmir Skopljak <rusmirskopljak@gmail.com>"]
 license = "MIT"
-repository = "https://github.com/ruledicaprio/multi-level-id-strip"
+repository = "https://github.com/ruledicaprio/SynthPass"
 description = "Air-gapped, multi-level identity-document extraction: deterministic ICAO 9303 MRZ validation with a local LLM fallback — zero cloud calls."
 
 [workspace.dependencies]
