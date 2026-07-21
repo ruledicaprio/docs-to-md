@@ -13,7 +13,11 @@ that field instead of guessing.";
 
 /// Fields requested from the model (subset of the canonical schema;
 /// provenance fields are added downstream, not by the model).
-const FIELDS: &[&str] = &[
+///
+/// Shared with [`crate::grammar`], which generates the GBNF from this exact
+/// list — what the model is *asked* for and what it is *permitted to emit*
+/// come from one source, so they cannot drift apart.
+pub(crate) const FIELDS: &[&str] = &[
     "document_type",
     "issuing_country",
     "document_number",

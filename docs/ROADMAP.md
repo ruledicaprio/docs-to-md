@@ -126,9 +126,23 @@ flowchart LR
   inside the library passed *vacuously* — capturing nothing — once sibling tests had already driven
   those callsites. It lives in its own test binary and asserts the harness captured something
   before asserting what it did not contain.
-  The remaining Atlas DoDs — OCR region detection by geometry, the bounded job queue / batch API
-  (`Pipeline::submit`/`JobHandle`, `POST /api/extract/batch`, `GET /api/jobs/{id}`), and
-  GBNF-constrained Tier-2 decoding — are still not started.
+- **M5 GBNF-constrained Tier-2 decoding (Atlas §8) has landed — with a flat accuracy result,
+  recorded honestly.** `synthpass-llm` generates its GBNF from `prompt::FIELDS` (so prompt and
+  grammar cannot drift), constrains JSON *structure* only, and demotes `repair.rs` to a fallback
+  behind a `needs_repair()` / `repair_fallbacks()` measurement. Measured A/B over the 6-document
+  parity corpus on qwen2.5-1.5b-instruct-q4_k_m: **repair fallbacks 2 → 0** (Atlas §8's stated
+  criterion, met), **field match rate unchanged at 19/42 (45.2%)**, **wall time +55%** (102s →
+  158s). Repair had already been salvaging those two documents, so eliminating the parse-failure
+  class bought robustness rather than accuracy — precisely the risk
+  [`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md) §12 named. It ships on
+  by default (`SYNTHPASS_LLM_GRAMMAR=0` opts out) because unrepresentable-by-construction beats
+  repaired-after-the-fact, and the latency lands only on the Tier-2 path that runs when Tier 1 has
+  already failed. Revisiting with a larger GGUF is Future Work, not an M5 gate.
+  Landing it also uncovered and fixed a latent double-accept in the sampling loop that had been
+  harmless only because every sampler in the chain was stateless.
+  The remaining Atlas DoDs are **OCR region detection by geometry + orientation** and the
+  **bounded job queue / parallel OCR / batch API** (`Pipeline::submit`/`JobHandle`,
+  `POST /api/extract/batch`, `GET /api/jobs/{id}`). Everything else in §3–§8 has landed.
 - **A nightly bench-data-collection workflow has also shipped** (PR #38,
   `.github/workflows/bench-data-collection.yml`): runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on a

@@ -3,8 +3,45 @@
 //! `python/inferer/adapter.py::repair_json`, plus schema validation into the
 //! canonical [`synthpass_core::Extraction`] (replacing the Python side's Pydantic
 //! validation).
+//!
+//! Since [`crate::grammar`] landed, this is a **fallback**, not the main path:
+//! grammar-constrained decoding can't produce the drift these routines undo.
+//! [`parse_extraction`] therefore tries a plain parse first and only reaches
+//! for repair when that fails, counting each such occasion in
+//! [`repair_fallbacks`] — so "the grammar is working" is a number, not a
+//! belief. The routines stay because the grammar can legitimately be
+//! unavailable (see [`crate::build_sampler`]) and because a model can still
+//! stop mid-object at the token cap.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use synthpass_core::Extraction;
+
+/// Count of [`parse_extraction`] calls that needed the repair path. Process-
+/// global and monotonic: the corpus harness reads it once at the end of a run,
+/// so there's nothing to reset and no per-call ownership to thread through.
+static REPAIR_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+/// How many extractions so far have fallen back to JSON repair.
+///
+/// The Atlas §8 acceptance criterion is that this stays at zero across the
+/// corpus once grammar-constrained decoding is on. It counts *attempts*, not
+/// successes — a fallback that then fails the schema is still a fallback.
+pub fn repair_fallbacks() -> u64 {
+    REPAIR_FALLBACKS.load(Ordering::Relaxed)
+}
+
+/// `true` when `raw` isn't already a single JSON object and would have to go
+/// through [`repair_json_text`] to become one.
+///
+/// Pure — unlike [`repair_fallbacks`], which aggregates across a whole process
+/// — so a caller can ask the question about one document, and a test can
+/// assert on it without racing other tests through a shared counter.
+pub fn needs_repair(raw: &str) -> bool {
+    !matches!(
+        serde_json::from_str::<serde_json::Value>(raw.trim()),
+        Ok(value) if value.is_object()
+    )
+}
 
 /// Best-effort cleanup of a model's raw JSON output: strips ```json fences,
 /// narrows to the outermost `{...}`, and removes trailing commas before a
@@ -67,13 +104,36 @@ fn strip_trailing_commas(s: &str) -> String {
 /// is injected into the JSON *before* deserialization — `Extraction` requires
 /// the field, unlike the other, optional, ICAO columns.
 pub fn parse_extraction(raw: &str) -> Result<Extraction, String> {
+    // Fast path: grammar-constrained output is already exactly one JSON
+    // object, so repairing it would be a no-op on every byte. The re-parse
+    // costs microseconds against a generation that took ~a second, and buys a
+    // race-free predicate ([`needs_repair`]) that callers and tests can use
+    // without reading a global counter.
+    if !needs_repair(raw) {
+        let value = serde_json::from_str(raw.trim()).expect("needs_repair just parsed this");
+        return into_extraction(value);
+    }
+
+    REPAIR_FALLBACKS.fetch_add(1, Ordering::Relaxed);
     let cleaned = repair_json_text(raw);
-    let mut value: serde_json::Value =
+    let value: serde_json::Value =
         serde_json::from_str(&cleaned).map_err(|e| format!("invalid JSON after repair: {e}"))?;
-    let obj = value
+    if !value.is_object() {
+        return Err("model output was valid JSON but not an object".to_string());
+    }
+    into_extraction(value)
+}
+
+/// Inject `extraction_method` and deserialize into the canonical schema.
+///
+/// The model is never asked for `extraction_method` (see [`crate::prompt`]),
+/// so it's set here rather than trusted from the output — `Extraction`
+/// requires the field, unlike the other, optional, ICAO columns.
+fn into_extraction(mut value: serde_json::Value) -> Result<Extraction, String> {
+    value
         .as_object_mut()
-        .ok_or("model output was valid JSON but not an object")?;
-    obj.insert("extraction_method".to_string(), "llm".into());
+        .expect("callers check is_object() first")
+        .insert("extraction_method".to_string(), "llm".into());
     serde_json::from_value(value).map_err(|e| format!("JSON did not match Extraction schema: {e}"))
 }
 
@@ -116,5 +176,50 @@ mod tests {
     #[test]
     fn parse_extraction_rejects_garbage() {
         assert!(parse_extraction("not json at all").is_err());
+    }
+
+    #[test]
+    fn clean_json_does_not_need_repair() {
+        assert!(!needs_repair(r#"{"surname":"DOE"}"#));
+        assert!(
+            !needs_repair("  {\"surname\": \"DOE\"}\n"),
+            "surrounding whitespace alone is not drift"
+        );
+    }
+
+    #[test]
+    fn the_drift_this_module_exists_for_needs_repair() {
+        for drifted in [
+            "```json\n{\"surname\": \"DOE\"}\n```",
+            "Sure, here is the JSON:\n{\"surname\": \"DOE\"}",
+            r#"{"surname": "DOE",}"#,
+            "not json at all",
+        ] {
+            assert!(
+                needs_repair(drifted),
+                "should have been routed to repair: {drifted}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_json_scalar_is_not_an_extraction() {
+        // Valid JSON, wrong shape. It must not sneak through the fast path as
+        // if it were an object.
+        assert!(needs_repair("\"just a string\""));
+        assert!(needs_repair("[1, 2, 3]"));
+        assert!(parse_extraction("[1, 2, 3]").is_err());
+    }
+
+    #[test]
+    fn repair_fallbacks_counts_only_the_drifted() {
+        // Monotonic and process-global, so this asserts direction rather than
+        // an exact delta — other tests share the counter.
+        let before = repair_fallbacks();
+        let _ = parse_extraction("```json\n{\"surname\": \"DOE\"}\n```");
+        assert!(
+            repair_fallbacks() > before,
+            "a fenced document must be counted as a repair fallback"
+        );
     }
 }
