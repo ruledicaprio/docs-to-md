@@ -101,6 +101,46 @@ fn draw_mrz_placeholder(img: &mut RgbImage, line_rect: Rect, text: &str) {
 // Real glyph rendering (only compiled with `embedded-fonts`).
 // ---------------------------------------------------------------------
 
+/// Alpha-blend `fg` over `bg` by the rasterizer's per-pixel coverage — using
+/// the full coverage gradient (instead of a hard on/off threshold) preserves
+/// the sub-pixel edge shape that OCR models rely on to distinguish
+/// similarly-shaped glyphs (e.g. `7`/`Z`, `O`/`0`).
+fn blend(bg: Rgb<u8>, fg: Rgb<u8>, coverage: f32) -> Rgb<u8> {
+    let a = coverage.clamp(0.0, 1.0);
+    let mut out = [0u8; 3];
+    for k in 0..3 {
+        out[k] = (bg[k] as f32 * (1.0 - a) + fg[k] as f32 * a).round() as u8;
+    }
+    Rgb(out)
+}
+
+#[cfg(feature = "embedded-fonts")]
+fn draw_one_glyph(img: &mut RgbImage, font: &ab_glyph::FontArc, glyph: ab_glyph::Glyph) {
+    use ab_glyph::Font;
+
+    let Some(outlined) = font.outline_glyph(glyph) else {
+        return;
+    };
+    let bounds = outlined.px_bounds();
+    outlined.draw(|gx, gy, coverage| {
+        if coverage <= 0.0 {
+            return;
+        }
+        let px = bounds.min.x as i32 + gx as i32;
+        let py = bounds.min.y as i32 + gy as i32;
+        if px >= 0 && py >= 0 {
+            let (px, py) = (px as u32, py as u32);
+            if px < img.width() && py < img.height() {
+                let bg = *img.get_pixel(px, py);
+                img.put_pixel(px, py, blend(bg, MRZ_CELL, coverage));
+            }
+        }
+    });
+}
+
+/// Flows `text` left-to-right using the font's own advance widths — fine for
+/// VIZ fields, which aren't checksum-validated and just need to look
+/// plausible within `rect`.
 #[cfg(feature = "embedded-fonts")]
 fn draw_glyph_text(
     img: &mut RgbImage,
@@ -117,23 +157,31 @@ fn draw_glyph_text(
     for c in text.chars() {
         let id = scaled.glyph_id(c);
         let glyph = id.with_scale_and_position(px_scale, point(x, y));
-        if let Some(outlined) = font.outline_glyph(glyph) {
-            let bounds = outlined.px_bounds();
-            outlined.draw(|gx, gy, coverage| {
-                if coverage <= 0.5 {
-                    return;
-                }
-                let px = bounds.min.x as i32 + gx as i32;
-                let py = bounds.min.y as i32 + gy as i32;
-                if px >= 0 && py >= 0 {
-                    let (px, py) = (px as u32, py as u32);
-                    if px < img.width() && py < img.height() {
-                        img.put_pixel(px, py, MRZ_CELL);
-                    }
-                }
-            });
-        }
+        draw_one_glyph(img, font, glyph);
         x += scaled.h_advance(id);
+    }
+}
+
+/// Draws one MRZ character per fixed-width cell from
+/// [`layout::mrz_char_rect`], centering each glyph within its own cell
+/// instead of flowing by the font's natural advance. MRZ text is checksum-
+/// validated after OCR, so cross-character drift from an advance/cell-width
+/// mismatch (which compounds over all 44 columns) must not be allowed to
+/// merge or overlap adjacent glyphs.
+#[cfg(feature = "embedded-fonts")]
+fn draw_mrz_glyphs(img: &mut RgbImage, font: &ab_glyph::FontArc, text: &str, line_rect: Rect) {
+    use ab_glyph::{point, Font, ScaleFont};
+
+    let px_scale = line_rect.height as f32 * 0.8;
+    let scaled = font.as_scaled(px_scale);
+    let y = line_rect.y as f32 + scaled.ascent();
+    for (i, c) in text.chars().enumerate() {
+        let cell = layout::mrz_char_rect(line_rect, i as u32);
+        let id = scaled.glyph_id(c);
+        let advance = scaled.h_advance(id);
+        let x = cell.x as f32 + ((cell.width as f32 - advance) / 2.0).max(0.0);
+        let glyph = id.with_scale_and_position(px_scale, point(x, y));
+        draw_one_glyph(img, font, glyph);
     }
 }
 
@@ -151,7 +199,7 @@ fn draw_text_field(img: &mut RgbImage, rect: Rect, text: &str, fonts: Option<&Fo
 fn draw_mrz_line(img: &mut RgbImage, rect: Rect, text: &str, fonts: Option<&Fonts>) {
     #[cfg(feature = "embedded-fonts")]
     if let Some(fonts) = fonts {
-        draw_glyph_text(img, &fonts.mrz, text, rect, rect.height as f32 * 0.8);
+        draw_mrz_glyphs(img, &fonts.mrz, text, rect);
         return;
     }
     #[cfg(not(feature = "embedded-fonts"))]
