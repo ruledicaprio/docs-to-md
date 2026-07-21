@@ -12,6 +12,7 @@
 //! them is proven or rejected by the ICAO check digits upstream, never
 //! assumed.
 
+use crate::BBox;
 use image::imageops::FilterType;
 use image::{GrayImage, RgbImage};
 
@@ -129,6 +130,82 @@ pub fn mrz_variants(image: &RgbImage) -> Vec<RgbImage> {
         )));
     }
     variants
+}
+
+/// Vertical padding added around a geometry-detected MRZ band
+/// ([`crate::geometry::detect_mrz_band`]'s content-scored box), as a
+/// fraction of the band's own height, before [`geometry_band_variants`]
+/// crops to it. Much tighter than [`BAND_PAD_FRACTION`]'s 50%: that margin
+/// compensates for [`mrz_band`]'s coarse row-density search, while this band
+/// is already the union of individual OCR-detected line boxes — a few
+/// percent is enough safety margin for descenders/ascenders sitting just
+/// outside the recognized glyph boxes, without dragging in the extra
+/// non-MRZ text a generous margin would risk reintroducing on exactly the
+/// dense scans this variant targets.
+const GEOMETRY_BAND_PAD_FRACTION: f64 = 0.08;
+
+/// A geometry-band crop within this many pixels (top offset and height,
+/// both) of [`bottom_band`]'s blind crop is treated as a duplicate and
+/// skipped. This is the overwhelmingly common case — most documents have no
+/// dense visual zone for the content-scored band to usefully avoid, so it
+/// lands close to where the blind crop already was — and it should cost
+/// nothing.
+const GEOMETRY_BAND_DEDUP_PX: u32 = 4;
+
+/// Geometry-driven MRZ retry variants — the consumer `detect_mrz_band` (see
+/// [`crate::geometry`]) was missing until now: crop to the content-scored
+/// band the geometry pass already computed — precise enough on a
+/// dense/bilingual scan to exclude the non-Latin visual-zone text sitting
+/// directly above the MRZ, which both [`bottom_band`]'s blind crop and
+/// [`mrz_band`]'s row-density search can still drag in — then apply the two
+/// treatments already proven strongest for a band crop: contrast stretch,
+/// then local threshold (glare/shadow-robust where a single Otsu cutoff
+/// would wash out).
+///
+/// Returns an empty vec, at effectively zero cost, whenever the crop
+/// wouldn't add anything: a degenerate band (near-zero width or height —
+/// shouldn't happen given `detect_mrz_band`'s own confidence floor, but the
+/// geometry pass upstream is best-effort, so this guards against it
+/// regardless) or a crop within [`GEOMETRY_BAND_DEDUP_PX`] pixels of what
+/// [`bottom_band`] already produces — the common case, where the
+/// content-scored band and the blind crop land in essentially the same
+/// place and a second pair of variants would only burn budget for nothing.
+pub fn geometry_band_variants(image: &RgbImage, band: BBox) -> Vec<RgbImage> {
+    let (w, h) = image.dimensions();
+    if w == 0 || h == 0 || band.w <= 0.0 || band.h <= 0.0 {
+        return Vec::new();
+    }
+
+    // Dedup against the *unpadded* band — comparing after padding would let
+    // an exact-match band (the common case: nothing dense to avoid, so
+    // `detect_mrz_band` lands right on the blind crop) slip past the pixel
+    // threshold purely because the pad shifted its top edge, even though
+    // the two crops are otherwise identical.
+    let band_top = band.y.round().clamp(0.0, h as f32) as u32;
+    let band_h_px = band.h.round().max(1.0) as u32;
+    let blind = bottom_band(image);
+    let blind_top = h.saturating_sub(blind.height());
+    if band_top.abs_diff(blind_top) <= GEOMETRY_BAND_DEDUP_PX
+        && band_h_px.abs_diff(blind.height()) <= GEOMETRY_BAND_DEDUP_PX
+    {
+        return Vec::new();
+    }
+
+    let pad = f64::from(band.h) * GEOMETRY_BAND_PAD_FRACTION;
+    let top = (f64::from(band.y) - pad).round().clamp(0.0, f64::from(h)) as u32;
+    let bottom = (f64::from(band.y + band.h) + pad)
+        .round()
+        .clamp(0.0, f64::from(h)) as u32;
+    if bottom <= top || bottom - top < 2 {
+        return Vec::new();
+    }
+    let crop_h = bottom - top;
+
+    let crop = image::imageops::crop_imm(image, 0, top, w, crop_h).to_image();
+    vec![
+        contrast_stretched(&upscale_to_width(&crop, BAND_MIN_WIDTH)),
+        local_threshold(&upscale_to_width(&crop, BAND_MIN_WIDTH)),
+    ]
 }
 
 /// Crop the bottom [`BAND_FRACTION`] of the image (full width). The blind
@@ -724,6 +801,58 @@ mod tests {
         // the trailing isolated variants, and is taller than the first band.
         let full_page = &v[2];
         assert!(v[0].height() < full_page.height() * 3 / 4);
+    }
+
+    #[test]
+    fn geometry_band_variants_empty_on_degenerate_band() {
+        let img = solid(200, 200, 200);
+        let band = BBox {
+            x: 0.0,
+            y: 50.0,
+            w: 100.0,
+            h: 0.0,
+        };
+        assert!(geometry_band_variants(&img, band).is_empty());
+    }
+
+    #[test]
+    fn geometry_band_variants_empty_when_matching_blind_crop() {
+        let img = solid(200, 200, 200);
+        let blind = bottom_band(&img);
+        let blind_top = img.height() - blind.height();
+        let band = BBox {
+            x: 0.0,
+            y: blind_top as f32,
+            w: 200.0,
+            h: blind.height() as f32,
+        };
+        assert!(
+            geometry_band_variants(&img, band).is_empty(),
+            "a band matching the blind crop should be skipped as a duplicate"
+        );
+    }
+
+    #[test]
+    fn geometry_band_variants_produces_two_treatments_for_a_distinct_band() {
+        let img = solid(400, 300, 200);
+        // Well above the blind bottom-45% crop (top at y=165 for a 300px
+        // image), so this counts as a genuinely distinct geometry-detected
+        // band rather than a near-duplicate.
+        let band = BBox {
+            x: 0.0,
+            y: 40.0,
+            w: 400.0,
+            h: 20.0,
+        };
+        let variants = geometry_band_variants(&img, band);
+        assert_eq!(variants.len(), 2, "contrast-stretched + local-threshold");
+        for v in &variants {
+            assert_eq!(
+                v.width(),
+                BAND_MIN_WIDTH,
+                "upscaled to the band width floor"
+            );
+        }
     }
 
     #[test]

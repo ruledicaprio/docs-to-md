@@ -163,6 +163,22 @@ const MRZ_GLYPH_ASPECT: f64 = 0.62;
 /// a spurious `mrz_band` out of whatever text happens to score highest.
 const MRZ_BAND_MIN_AVG_SCORE: f64 = 0.15;
 
+/// A band score at or above this is strong enough that
+/// `crate::NativeOcr::recognize_detailed` skips its 180° probe entirely —
+/// no observed upside-down page scores this well, so the flip could not win
+/// even if it were tried, and the extra geometry pass would be pure cost.
+///
+/// **Measured, not guessed.** Over the 42-image `samples/` corpus, each page
+/// was scored upright and rotated 180°. Upside-down scores topped out at
+/// **0.7132** (`North_Macedonia_Passport_Specimen.webp`); this sits just
+/// above that. The same sweep is why the tie-break is a *comparison* rather
+/// than a threshold: upside-down scores overlap genuine upright ones across
+/// most of the range (plenty of real, correctly-oriented documents score
+/// 0.23–0.48), so no absolute cutoff can separate the two — only running
+/// both orientations and comparing them can. See
+/// [`detect_mrz_band_scored`].
+pub const MRZ_BAND_CONFIDENT_SCORE: f64 = 0.75;
+
 /// Per-line MRZ-likelihood score (A2), combining three independent signals
 /// — each in `[0, 1]`, multiplied together so a line must be strong on all
 /// three rather than merely acceptable on one (a long run of digits is
@@ -217,6 +233,23 @@ pub fn mrz_line_score(line: &OcrLine, mrz_charset: &str) -> f64 {
 /// separate, additive signal surfaced on [`OcrPage::mrz_band`], not a
 /// replacement for it.
 pub fn detect_mrz_band(lines: &[OcrLine], mrz_charset: &str) -> Option<BBox> {
+    detect_mrz_band_scored(lines, mrz_charset).map(|(bbox, _)| bbox)
+}
+
+/// [`detect_mrz_band`], but also returning the winning group's average score
+/// — the number that function computes and then discards.
+///
+/// The score is what makes a **comparison between two candidate orientations**
+/// possible, which is how `crate::NativeOcr::recognize_detailed` resolves the
+/// 0°-vs-180° ambiguity `crate::choose_rotation` cannot: run the geometry pass
+/// on the page and on its 180° flip, and keep whichever produces the
+/// better-scoring band. Location alone is not enough to decide this — a
+/// genuinely upside-down page routinely produces a *spurious* band from
+/// mid-page noise that outscores the real (now garbled) MRZ, so "is the band
+/// near the top?" answers the wrong question. Score separation between the
+/// two orientations is large and directional; see
+/// [`MRZ_BAND_CONFIDENT_SCORE`].
+pub fn detect_mrz_band_scored(lines: &[OcrLine], mrz_charset: &str) -> Option<(BBox, f64)> {
     let scores: Vec<f64> = lines
         .iter()
         .map(|l| mrz_line_score(l, mrz_charset))
@@ -241,7 +274,7 @@ pub fn detect_mrz_band(lines: &[OcrLine], mrz_charset: &str) -> Option<BBox> {
         return None;
     }
     let boxes: Vec<BBox> = lines[start..end].iter().map(|l| l.bbox).collect();
-    BBox::union(&boxes)
+    BBox::union(&boxes).map(|bbox| (bbox, avg))
 }
 
 /// Grid resolution (cells per axis) [`detect_portrait`] uses for its coarse
