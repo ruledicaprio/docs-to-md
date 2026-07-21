@@ -1,7 +1,21 @@
 [package]
 name = "mrz"
-version.workspace = true
+# Decoupled from the workspace `1.1.0`: this is the crate's first *public*
+# release and the API still has documented gaps (MRV visas, document-number
+# overflow), so 0.x signals that honestly rather than inheriting the repo's
+# internal version.
+version = "0.1.0"
 edition.workspace = true
+description = "Zero-dependency ICAO 9303 Machine Readable Zone (MRZ) parser and check-digit validator for TD1/TD2/TD3 documents."
+license = "MIT"
+repository = "https://github.com/ruledicaprio/SynthPass"
+readme = "README.md"
+keywords = ["mrz", "icao", "passport", "9303", "ocr"]
+categories = ["parser-implementations", "text-processing"]
+
+# Render the `serde` and `zeroize` feature surfaces on docs.rs.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
@@ -19,3 +33,6 @@ zeroize = ["dep:zeroize"]
 # tests/fuzz_props.rs). Dev-only: doesn't ship, doesn't affect the
 # wasm32-unknown-unknown zero-dep build.
 proptest = "1"
+# Drives the `serde` round-trip test (tests/serde_roundtrip.rs, gated on the
+# `serde` feature). Dev-only — not a published dependency.
+serde_json = "1"

@@ -8,7 +8,7 @@
 //! (the caller supplies "today").
 
 #[cfg(feature = "serde")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Expand `YYMMDD` to ISO `YYYY-MM-DD`.
 ///
@@ -48,7 +48,7 @@ pub fn expand_date_with_pivot(yymmdd: &str, is_birth: bool, pivot_yy: u32) -> St
 /// A simple proleptic-Gregorian calendar date. Used as the "today" reference
 /// for [`crate::MrzData::validity`] and to measure days-until-expiry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Date {
     pub year: i32,
     pub month: u32,
@@ -123,7 +123,7 @@ pub(crate) fn parse_iso(date: &str) -> Option<Date> {
 /// Distinct from the check digits: a checksum-valid MRZ can still be expired
 /// or carry impossible dates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DateValidity {
     /// Both `date_of_birth` and `date_of_expiry` parse as real calendar dates.
     pub dates_well_formed: bool,

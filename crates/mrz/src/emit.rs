@@ -27,6 +27,8 @@
 //! returns exactly 44+1+44 = 89 characters.
 
 use crate::checksum::check_digit;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// Raw TD3 sub-fields, in MRZ-native form (see module docs).
 ///
@@ -34,6 +36,7 @@ use crate::checksum::check_digit;
 /// respectively (the field widths); longer input is silently truncated.
 /// `date_of_birth` / `date_of_expiry` are `YYMMDD`, not ISO dates.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Td3Fields {
     /// Document code, e.g. `"P"` for passport. Defaults to `"P"`.
     pub document_code: String,

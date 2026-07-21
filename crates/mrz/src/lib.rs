@@ -11,17 +11,17 @@
 //! mathematically proves the OCR read is faithful to the printed document —
 //! no probabilistic model involved.
 //!
-//! The engine is split across modules:
-//! - [`checksum`] — check-digit math and generic OCR-repair primitives
-//! - [`parser`] — the TD1/TD2/TD3 parsers and the free-text scanner
-//! - [`dates`] — `YYMMDD` expansion and date-plausibility checks
-//! - [`countries`] — ICAO/ISO 3166-1 code → country name
+//! The engine is split across (private) modules:
+//! - `checksum` — check-digit math and generic OCR-repair primitives
+//! - `parser` — the TD1/TD2/TD3 parsers and the free-text scanner
+//! - `dates` — `YYMMDD` expansion and date-plausibility checks
+//! - `countries` — ICAO/ISO 3166-1 code → country name
 //!
 //! A valid composite check digit proves a faithful *read*; it does not prove
 //! the document is in date — see [`MrzData::validity`].
 
 #[cfg(feature = "serde")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "zeroize")]
 use zeroize::ZeroizeOnDrop;
 
@@ -39,7 +39,7 @@ pub use parser::{find_and_parse, parse_td1, parse_td2, parse_td3};
 
 /// Per-field check-digit verification results.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Checks {
     pub document_number: bool,
     pub date_of_birth: bool,
@@ -62,7 +62,7 @@ impl Checks {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Format {
     Td3,
     Td2,
@@ -77,7 +77,7 @@ pub enum Format {
 /// value is dropped. `format` and `checks` carry no PII and are `Copy`, so
 /// they're `#[zeroize(skip)]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "zeroize", derive(ZeroizeOnDrop))]
 pub struct MrzData {
     #[cfg_attr(feature = "zeroize", zeroize(skip))]

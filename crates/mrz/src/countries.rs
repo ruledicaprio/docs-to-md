@@ -285,11 +285,11 @@ pub fn country_name(code: &str) -> Option<&'static str> {
 }
 
 /// Map a country or entity name back to its 3-letter ICAO/ISO 3166-1 code —
-/// the reverse of [`country_name`], over the same [`CODES`] table so the two
+/// the reverse of [`country_name`], over the same `CODES` table so the two
 /// directions can't drift apart. Case-insensitive (Tier-2 LLM reads commonly
 /// come back upper/lower/title-cased inconsistently, e.g. `"CROATIA"` vs
 /// `"Croatia"`). Returns `None` for names not in the table; when a name has
-/// more than one legitimate code (Kosovo, Germany — see [`CODES`]'s doc
+/// more than one legitimate code (Kosovo, Germany — see `CODES`'s doc
 /// comment), the first (primary) code in table order wins.
 pub fn code_for_name(name: &str) -> Option<&'static str> {
     CODES
