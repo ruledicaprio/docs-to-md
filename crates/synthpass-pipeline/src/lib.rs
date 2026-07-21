@@ -1267,11 +1267,23 @@ mod tests {
             "v1 shape must not grow schema_version"
         );
 
-        // v2: checksum-proven confidence + provenance + per-check-digit detail.
+        // v2: provenance + per-check-digit detail, and confidence honest
+        // about which fields the ICAO check digits actually cover. Only
+        // document_number/date_of_birth/date_of_expiry/personal_number carry
+        // a real check digit (verified against mrz::parser's composite
+        // ranges); document_type/issuing_country/surname/given_names/
+        // nationality/sex are structural parses, not proofs — see
+        // synthpass_core::v2::FieldConfidence::mrz_checksum_scope.
         let v2 = result.extracted_v2.as_ref().expect("v2 extraction");
         assert_eq!(v2.schema_version, 2);
         assert_eq!(v2.provenance, Provenance::MrzChecksum);
-        assert!(v2.confidence.all_proven(), "Tier-1 fields are proven");
+        assert!(
+            !v2.confidence.all_proven(),
+            "TD3 line 1 has no check digit; the record must not claim it does"
+        );
+        assert_eq!(v2.confidence.document_number, 1.0);
+        assert_eq!(v2.confidence.date_of_birth, 1.0);
+        assert_eq!(v2.confidence.date_of_expiry, 1.0);
         assert_eq!(v2.fields.document_number.as_deref(), Some("007007007"));
         assert_eq!(v2.document.mrz_format, Some(MrzFormat::Td3));
         let mrz = v2.mrz.as_ref().expect("MRZ block present on Tier 1");
