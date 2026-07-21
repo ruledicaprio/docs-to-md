@@ -10,7 +10,10 @@
 
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Query, Request, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    http::{
+        header::{AUTHORIZATION, RETRY_AFTER},
+        HeaderMap, HeaderValue, StatusCode,
+    },
     middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -51,7 +54,12 @@ struct AppState {
     license_expires_unix: Option<u64>,
 }
 
-type ApiError = (StatusCode, Json<Value>);
+type ApiError = (StatusCode, HeaderMap, Json<Value>);
+
+/// Seconds a queue-full client should wait before retrying — a fixed,
+/// conservative value rather than anything derived from actual queue
+/// dynamics (this server has no ETA to offer, just "not now").
+const QUEUE_FULL_RETRY_AFTER_SECS: u64 = 5;
 
 /// The vendor media type legacy clients can send to keep the v1 response shape.
 const LEGACY_V1_ACCEPT: &str = "application/vnd.mlis.v1+json";
@@ -72,7 +80,25 @@ fn wants_legacy_v1(params: &HashMap<String, String>, headers: &HeaderMap) -> boo
 }
 
 fn api_error(status: StatusCode, msg: impl std::fmt::Display) -> ApiError {
-    (status, Json(json!({ "error": msg.to_string() })))
+    (
+        status,
+        HeaderMap::new(),
+        Json(json!({ "error": msg.to_string() })),
+    )
+}
+
+/// Like [`api_error`], but with a `Retry-After` header — scoped strictly to
+/// the queue-full case (the only 503 this server issues that the client can
+/// meaningfully do something about by waiting; an expired license won't fix
+/// itself in `N` seconds, so that path stays on plain `api_error`).
+fn queue_full_error(msg: impl std::fmt::Display) -> ApiError {
+    let (status, mut headers, body) = api_error(StatusCode::SERVICE_UNAVAILABLE, msg);
+    headers.insert(
+        RETRY_AFTER,
+        HeaderValue::from_str(&QUEUE_FULL_RETRY_AFTER_SECS.to_string())
+            .expect("a formatted u64 is always a valid header value"),
+    );
+    (status, headers, body)
 }
 
 /// `true` iff `license_expires_unix` names a real expiry that's already
@@ -293,8 +319,7 @@ async fn extract(
     // (MRZ) requests never touch the queue, so this only ever costs a
     // Tier-2-bound request a queued slot it wouldn't have gotten anyway.
     if state.pipeline.llm_queue_depth() >= state.max_queue_depth {
-        return Err(api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+        return Err(queue_full_error(
             "inference queue is full — try again shortly",
         ));
     }
@@ -568,6 +593,11 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(RETRY_AFTER),
+            Some(&HeaderValue::from_static("5")),
+            "queue-full is the one 503 a client can meaningfully retry after"
+        );
     }
 
     #[tokio::test]
@@ -597,6 +627,11 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(RETRY_AFTER),
+            None,
+            "an expired license won't fix itself by waiting, so this path stays plain"
+        );
     }
 
     fn health_app(license_expires_unix: Option<u64>) -> Router {
