@@ -51,6 +51,20 @@ const PLAUSIBLE: f32 = 0.65;
 /// discarded; a wrong-looking value is still the model's best answer.
 const IMPLAUSIBLE: f32 = 0.3;
 
+/// A Tier-1 field that parsed cleanly (real charset, correct offset, correct
+/// line length) but carries **no ICAO check digit**. Verified directly
+/// against `mrz::parser`'s composite ranges and the ICAO fixture in
+/// `mrz::dates`: TD1/TD2/TD3 all check-digit exactly `document_number`,
+/// `date_of_birth`, `date_of_expiry`, `personal_number` — the composite
+/// excludes `nationality` and `sex` too, matching the published standard, not
+/// an oversight in this codebase. Everything else in [`ExtractionFields`] is
+/// structural parsing. Set below [`PROVEN`] and above the Tier-2
+/// [`PLAUSIBLE`] band — a real OCR+MRZ-charset read is more reliable than an
+/// LLM guess, but it is not a proof, and must never compare equal to one.
+/// See [`crate::fusion`] for the deterministic cross-checks that partially
+/// make up for the missing arithmetic.
+const MRZ_STRUCTURAL: f32 = 0.9;
+
 /// A single extracted identity / travel document record, schema v2.
 ///
 /// Relationship to v1: every v1 scalar field lives verbatim under [`fields`];
@@ -92,6 +106,14 @@ pub struct ExtractionV2 {
     /// suspect. [`MrzBlock::lines`] carries PII and is zeroized on drop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mrz: Option<MrzBlock>,
+    /// Line-1 integrity verdict (`crate::fusion::check_line1_integrity`),
+    /// when an MRZ was found. Distinct from `mrz.checks`: that says whether
+    /// the check digits verify (line 2 only — TD1/TD2/TD3 carry none for
+    /// line 1); this says whether line 1 looks internally consistent with
+    /// what line 2 and the ICAO country table say it should. `None` on the
+    /// Tier-2 (LLM) path, which has no MRZ to check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line1_integrity: Option<crate::fusion::Verdict>,
     /// Date-plausibility summary — unchanged semantics from v1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[zeroize(skip)]
@@ -128,6 +150,7 @@ impl Default for ExtractionV2 {
             confidence: FieldConfidence::default(),
             provenance: Provenance::default(),
             mrz: None,
+            line1_integrity: None,
             validity: None,
             portrait: None,
             barcodes: Vec::new(),
@@ -266,9 +289,33 @@ impl FieldConfidence {
         }
     }
 
-    /// All fields checksum-proven (Tier 1 / WASM demo).
+    /// All fields checksum-proven. Used by the WASM demo path, which does not
+    /// yet distinguish which fields its client-side check digits cover; the
+    /// native Tier-1 pipeline uses [`Self::mrz_checksum_scope`] instead,
+    /// which does.
     pub fn proven() -> Self {
         Self::uniform(PROVEN)
+    }
+
+    /// Confidence for a checksum-passing native Tier-1 MRZ read, honest about
+    /// which fields the ICAO check digits actually cover (same shape across
+    /// TD1/TD2/TD3 — see [`MRZ_STRUCTURAL`]'s doc comment for how this was
+    /// verified). Only `document_number`, `date_of_birth`, `date_of_expiry`,
+    /// and `personal_number` are mathematically proven; the rest are
+    /// structural parses.
+    pub fn mrz_checksum_scope() -> Self {
+        Self {
+            document_type: MRZ_STRUCTURAL,
+            issuing_country: MRZ_STRUCTURAL,
+            document_number: PROVEN,
+            surname: MRZ_STRUCTURAL,
+            given_names: MRZ_STRUCTURAL,
+            nationality: MRZ_STRUCTURAL,
+            date_of_birth: PROVEN,
+            sex: MRZ_STRUCTURAL,
+            date_of_expiry: PROVEN,
+            personal_number: PROVEN,
+        }
     }
 
     /// The flat Tier-2 heuristic used until M5 lands per-field scoring.
@@ -465,8 +512,10 @@ impl From<&Extraction> for ExtractionV2 {
     /// Lift a v1 record into v2, deriving what v1 never recorded:
     ///
     /// - **confidence / provenance** come from `extraction_method`:
-    ///   `mrz-deterministic` → all 1.0 + [`Provenance::MrzChecksum`];
-    ///   `mrz-wasm-client` → all 1.0 + [`Provenance::WasmClient`]; `llm` (and
+    ///   `mrz-deterministic` → [`FieldConfidence::mrz_checksum_scope`] (only
+    ///   the four check-digited fields at 1.0) + [`Provenance::MrzChecksum`];
+    ///   `mrz-wasm-client` → all 1.0 + [`Provenance::WasmClient`] (the WASM
+    ///   demo doesn't yet distinguish per-field coverage); `llm` (and
     ///   any unrecognized value — the lift stays total rather than panicking
     ///   on producer drift) → per-field heuristic scores (see
     ///   [`heuristic_field_confidence`]) + [`Provenance::Llm`] with
@@ -482,7 +531,10 @@ impl From<&Extraction> for ExtractionV2 {
     /// (`ZeroizeOnDrop`), and Rust forbids partial moves out of one.
     fn from(v1: &Extraction) -> Self {
         let (confidence, provenance) = match v1.extraction_method.as_str() {
-            "mrz-deterministic" => (FieldConfidence::proven(), Provenance::MrzChecksum),
+            "mrz-deterministic" => (
+                FieldConfidence::mrz_checksum_scope(),
+                Provenance::MrzChecksum,
+            ),
             "mrz-wasm-client" => (FieldConfidence::proven(), Provenance::WasmClient),
             _ => (
                 heuristic_field_confidence(v1),
@@ -532,6 +584,12 @@ impl From<&Extraction> for ExtractionV2 {
             confidence,
             provenance,
             mrz,
+            // Not recomputed on this legacy lift: v1's `Extraction` only kept
+            // the flattened scalar strings, not the structured `mrz::MrzData`
+            // `check_line1_integrity` needs. The native pipeline path
+            // (`extraction_v2_from_mrz`) has the real value and sets it
+            // directly.
+            line1_integrity: None,
             validity: v1.validity,
             portrait: None,
             barcodes: Vec::new(),
@@ -574,11 +632,28 @@ mod tests {
     }
 
     #[test]
-    fn lift_from_mrz_deterministic_is_fully_proven() {
+    fn lift_from_mrz_deterministic_scores_only_check_digited_fields_as_proven() {
         let v2 = ExtractionV2::from(croatian_specimen_v1());
         assert_eq!(v2.schema_version, 2);
         assert_eq!(v2.provenance, Provenance::MrzChecksum);
-        assert!(v2.confidence.all_proven(), "Tier 1 = checksum-proven");
+        // Only the four fields an ICAO check digit actually covers are
+        // proven; `!all_proven()` is the correction this test used to get
+        // backwards — see `MRZ_STRUCTURAL`'s doc comment.
+        assert!(
+            !v2.confidence.all_proven(),
+            "TD3 line 1 (document_type, issuing_country, surname, given_names) \
+             and nationality/sex have no check digit — the record must not \
+             claim otherwise"
+        );
+        assert_eq!(v2.confidence.document_number, PROVEN);
+        assert_eq!(v2.confidence.date_of_birth, PROVEN);
+        assert_eq!(v2.confidence.date_of_expiry, PROVEN);
+        assert_eq!(v2.confidence.personal_number, PROVEN);
+        assert_eq!(v2.confidence.issuing_country, MRZ_STRUCTURAL);
+        assert_eq!(v2.confidence.surname, MRZ_STRUCTURAL);
+        assert_eq!(v2.confidence.given_names, MRZ_STRUCTURAL);
+        assert_eq!(v2.confidence.nationality, MRZ_STRUCTURAL);
+        assert_eq!(v2.confidence.sex, MRZ_STRUCTURAL);
         assert_eq!(v2.extraction_method, "mrz-deterministic");
         assert_eq!(v2.document.kind, DocumentKind::Passport);
         assert_eq!(v2.document.mrz_format, Some(MrzFormat::Td3));
@@ -715,15 +790,19 @@ mod tests {
                 "date_of_expiry": "2014-07-01",
                 "personal_number": null
             },
+            // Only the four check-digited fields are 1.0; the rest are
+            // structural parses (MRZ_STRUCTURAL) — see
+            // FieldConfidence::mrz_checksum_scope. Interpolated (not a literal
+            // 0.9) so this doesn't fight f32→f64 widening precision.
             "confidence": {
-                "document_type": 1.0,
-                "issuing_country": 1.0,
+                "document_type": MRZ_STRUCTURAL,
+                "issuing_country": MRZ_STRUCTURAL,
                 "document_number": 1.0,
-                "surname": 1.0,
-                "given_names": 1.0,
-                "nationality": 1.0,
+                "surname": MRZ_STRUCTURAL,
+                "given_names": MRZ_STRUCTURAL,
+                "nationality": MRZ_STRUCTURAL,
                 "date_of_birth": 1.0,
-                "sex": 1.0,
+                "sex": MRZ_STRUCTURAL,
                 "date_of_expiry": 1.0,
                 "personal_number": 1.0
             },

@@ -15,6 +15,7 @@ use zeroize::ZeroizeOnDrop;
 pub mod audit;
 #[cfg(feature = "security")]
 pub mod crypt;
+pub mod fusion;
 pub mod normalize;
 pub mod v2;
 
