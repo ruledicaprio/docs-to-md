@@ -1,6 +1,7 @@
 //! synthpass-serve — web front-end for the multi-level-id-strip pipeline.
 //!
 //! GET  /             → embedded upload page
+//! GET  /health       → liveness + OCR/inference backend + license status (no auth)
 //! POST /api/extract  → multipart file upload → shared `synthpass-pipeline` crate
 //!                      (OCR engine → Markdown → Tier 1 MRZ → Tier 2 LLM → JSON)
 //!
@@ -72,6 +73,15 @@ fn wants_legacy_v1(params: &HashMap<String, String>, headers: &HeaderMap) -> boo
 
 fn api_error(status: StatusCode, msg: impl std::fmt::Display) -> ApiError {
     (status, Json(json!({ "error": msg.to_string() })))
+}
+
+/// `true` iff `license_expires_unix` names a real expiry that's already
+/// passed. `None` (license checking skipped via `SYNTHPASS_LICENSE_SKIP=1`)
+/// is never considered expired. Factored out of `extract`'s inline check so
+/// `/health` can report the same status without duplicating the comparison.
+fn license_is_expired(license_expires_unix: Option<u64>) -> bool {
+    license_expires_unix
+        .is_some_and(|expires_unix| synthpass_license::current_unix() > expires_unix)
 }
 
 /// Whether `addr` (a `host:port`, `[ipv6]:port`, or bare host) names a loopback
@@ -208,6 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/extract", post(extract))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        // Merged in after the auth layer so /health stays reachable without
+        // credentials — infra health probes typically don't carry one, and a
+        // health check that itself requires auth defeats part of its purpose.
+        .merge(Router::new().route("/health", get(health)))
         .with_state(state);
 
     // Optional TLS (rustls) when both cert and key are provided.
@@ -237,6 +251,33 @@ async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
+/// Liveness/readiness probe: OCR engine + inference-backend identity, a real
+/// (but bounded — [`synthpass_pipeline::Pipeline::infer_health`] already
+/// enforces its own budget) inference health check, and license-expiry
+/// status. No PII, no auth required (see the router wiring in `main`).
+///
+/// Always responds `200`: a health check reporting an unhealthy component is
+/// itself a successful probe (unlike `/api/extract`, which must actively
+/// refuse to do work in those states) — callers should inspect the body, not
+/// just the status code.
+async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let infer = state.pipeline.infer_health().await;
+    let infer_ok = infer.is_ok();
+    let license_expired = license_is_expired(state.license_expires_unix);
+    Json(json!({
+        "status": if infer_ok && !license_expired { "ok" } else { "degraded" },
+        "ocr_engine": state.pipeline.ocr_engine(),
+        "infer": {
+            "backend": state.pipeline.infer_describe(),
+            "ok": infer_ok,
+            "detail": infer.unwrap_or_else(|e| e),
+        },
+        "license": {
+            "expired": license_expired,
+        },
+    }))
+}
+
 async fn extract(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -261,13 +302,11 @@ async fn extract(
     // Cheap expiry-only check (no signature re-verification — that only
     // happens once at boot) so a long-running server past its license's
     // expiry stops serving instead of running indefinitely on a stale check.
-    if let Some(expires_unix) = state.license_expires_unix {
-        if synthpass_license::current_unix() > expires_unix {
-            return Err(api_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "license has expired",
-            ));
-        }
+    if license_is_expired(state.license_expires_unix) {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "license has expired",
+        ));
     }
 
     // Take the first uploaded file field.
@@ -446,6 +485,22 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn license_is_expired_cases() {
+        assert!(
+            !license_is_expired(None),
+            "skipped license checking is never expired"
+        );
+        assert!(
+            !license_is_expired(Some(4_000_000_000)),
+            "far-future expiry is not expired"
+        );
+        assert!(
+            license_is_expired(Some(0)),
+            "unix-epoch expiry is in the past"
+        );
+    }
+
     fn sample_license_payload(expires_unix: u64) -> synthpass_license::LicensePayload {
         synthpass_license::LicensePayload {
             license_id: "test-license".into(),
@@ -542,6 +597,56 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    fn health_app(license_expires_unix: Option<u64>) -> Router {
+        let pipeline = Pipeline::new(
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
+        );
+        let state = Arc::new(AppState {
+            pipeline,
+            work_dir: PathBuf::from("work"),
+            keep_work: false,
+            token: None,
+            max_queue_depth: 4,
+            license_expires_unix,
+        });
+        Router::new()
+            .route("/health", get(health))
+            .with_state(state)
+    }
+
+    async fn health_body(app: Router) -> Value {
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "health always responds 200");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn health_reports_expected_fields_when_license_valid() {
+        let body = health_body(health_app(Some(4_000_000_000))).await;
+        assert!(body["ocr_engine"].is_string());
+        assert!(body["infer"]["backend"].is_string());
+        assert!(body["infer"]["ok"].is_boolean());
+        assert_eq!(body["license"]["expired"], false);
+    }
+
+    #[tokio::test]
+    async fn health_reflects_expired_license() {
+        let body = health_body(health_app(Some(0))).await;
+        assert_eq!(body["license"]["expired"], true);
+        assert_eq!(
+            body["status"], "degraded",
+            "an expired license alone should mark the service degraded"
+        );
     }
 
     /// A minimal `AppState` for exercising `require_auth` in isolation, without
