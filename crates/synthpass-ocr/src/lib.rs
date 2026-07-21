@@ -29,7 +29,11 @@
 //! preprocessed variants of the image ([`preprocess::mrz_variants`]: a
 //! row-density-isolated MRZ-band crop, contrast-stretched/binarized/locally-
 //! thresholded and deskewed, then the upscaled full page), appending any
-//! MRZ-shaped lines it finds to the output. The loop stops at the first
+//! MRZ-shaped lines it finds to the output. When the geometry pass (below)
+//! found a confident `mrz_band`, [`preprocess::geometry_band_variants`]
+//! contributes up to two more — a crop to that content-scored box rather
+//! than a blind or row-density-searched one — chained on strictly as
+//! trailing extras after `mrz_variants`'s own. The loop stops at the first
 //! variant that validates. Retries are additive-only — the general pass's
 //! text is never replaced — so Tier-2 input can only gain candidate lines,
 //! and a checksum gate upstream decides what is trusted.
@@ -82,11 +86,14 @@ const MRZ_BEAM_WIDTH: u32 = 24;
 /// Default `SYNTHPASS_OCR_MAX_PASSES` ceiling on total OCR passes per document
 /// (the general pass plus retry variants) when the env var is unset or
 /// invalid. `preprocess::mrz_variants` yields at most 6 variants (two
-/// blind-crop, one full-page, three trailing isolated-band); 7 is those plus
-/// the general pass, so none is silently truncated by the pass budget on the
-/// worst case. The `SYNTHPASS_OCR_MAX_SECONDS` wall-clock budget is what actually
-/// bounds a pathological document.
-const DEFAULT_MAX_PASSES: usize = 7;
+/// blind-crop, one full-page, three trailing isolated-band) and
+/// `preprocess::geometry_band_variants` appends at most 2 more (trailing
+/// again, and only when the geometry-detected band differs from the blind
+/// crop); 8 is those plus the general pass, so none is silently truncated by
+/// the pass budget on the worst case — precisely the dense/bilingual scans
+/// the geometry-band variants exist for. The `SYNTHPASS_OCR_MAX_SECONDS`
+/// wall-clock budget is what actually bounds a pathological document.
+const DEFAULT_MAX_PASSES: usize = 8;
 
 /// Default `SYNTHPASS_OCR_MAX_SECONDS` wall-clock ceiling on the whole
 /// `recognize` call when the env var is unset or invalid. Measured
@@ -197,24 +204,32 @@ impl NativeOcr {
     /// together, [`OcrPage`].
     ///
     /// **What's unchanged vs. what's new**, for anyone auditing that
-    /// `recognize`'s behaviour didn't shift under this split: everything
-    /// from `overall_started` through the end of the retry loop below is
-    /// the pass budget / time budget / MRZ retry logic from before this
-    /// method existed, untouched line-for-line (still calling the original
-    /// `run_pass`/`region_count`/`mrz_shaped_lines` helpers). What's new is
-    /// layered strictly around it: orientation detection ([`choose_rotation`],
-    /// A3) runs first and — being detection-only and conservatively biased
-    /// toward "no rotation" (see its doc comment) — only ever changes the
-    /// `image` this pipeline sees when it is confident the page is rotated;
-    /// when it isn't, `image` is the same un-rotated buffer `recognize` has
-    /// always run on, so the retry loop below, and therefore `text`, behaves
-    /// identically to before. The structured line/word geometry
-    /// ([`geometry_pass`]) is best-effort and additive: its own detect+
-    /// recognize pass never feeds back into `text`, and a failure in it
-    /// degrades `OcrPage`'s structured fields to empty rather than failing
-    /// this call. Both new steps run *before* `overall_started` is set, so
-    /// neither eats into the retry loop's own wall-clock budget
-    /// (`DEFAULT_MAX_SECONDS`) — they add to this call's total latency, not
+    /// `recognize`'s behaviour didn't shift under this split: the pass
+    /// budget / time budget / MRZ retry logic below is from before this
+    /// method existed (still calling the original `run_pass`/`region_count`/
+    /// `mrz_shaped_lines` helpers, and `preprocess::mrz_variants` itself is
+    /// untouched), plus exactly one additive change to the retry loop's
+    /// variant list (below). What's new is layered strictly around and
+    /// after that core: orientation detection ([`choose_rotation`], A3) runs
+    /// first and — being detection-only and conservatively biased toward "no
+    /// rotation" (see its doc comment) — only ever changes the `image` this
+    /// pipeline sees when it is confident the page is rotated. The
+    /// structured line/word geometry ([`geometry_pass`]) is best-effort: its
+    /// own detect+recognize pass never feeds back into `text`, and a failure
+    /// in it degrades `OcrPage`'s structured fields to empty rather than
+    /// failing this call. Its `mrz_band` output then feeds two more additive
+    /// steps: the 0°/180° tie-break ([`band_in_upper_third`]) that
+    /// `choose_rotation` can't resolve on its own, and — down in the retry
+    /// loop — `preprocess::geometry_band_variants`, chained strictly as
+    /// *trailing* extras after every existing `mrz_variants` entry. Both are
+    /// gated on a *confident* `mrz_band`; absent one, `image` stays whatever
+    /// `choose_rotation` produced and the variant list is exactly
+    /// `mrz_variants`'s own — the same as before this milestone, so an
+    /// already-passing upright specimen's `image`/`text` are byte-identical
+    /// to its pre-M5 behaviour. Everything through `choose_rotation` and the
+    /// geometry passes runs *before* `overall_started` is set, so none of it
+    /// eats into the retry loop's own wall-clock budget
+    /// (`DEFAULT_MAX_SECONDS`) — it adds to this call's total latency, not
     /// to the retry loop's.
     pub fn recognize_detailed(&self, image_path: &Path) -> Result<OcrPage, String> {
         let verbose = verbose_enabled();
@@ -242,6 +257,38 @@ impl NativeOcr {
         // rather than threaded through `run_pass`/`region_count` below).
         let (lines, word_boxes) = geometry_pass(&self.engine, &image).unwrap_or_default();
         let mrz_band = geometry::detect_mrz_band(&lines, MRZ_CHARSET);
+
+        // A3 continued — the 0°/180° tie-break `choose_rotation` cannot
+        // resolve on its own (see its doc comment: an upside-down horizontal
+        // line measures identically wide-and-short as a right-side-up one).
+        // The MRZ settles it: on every ICAO layout (TD1 rear, TD2, TD3 data
+        // page) it sits at the bottom of the page, so a `mrz_band` that
+        // cleared `detect_mrz_band`'s own confidence floor and still landed
+        // in the upper third is strong, specific evidence the page is still
+        // upside-down after `choose_rotation`'s pass. Only that combination
+        // — confident band *and* upper-third — triggers a flip; a `None`
+        // band (nothing to disambiguate with) or a confident band anywhere
+        // in the lower two-thirds (already consistent with upright) leaves
+        // `image`/`rotation`/`lines`/`word_boxes`/`mrz_band` untouched, which
+        // is what keeps this a pure addition rather than a second chance to
+        // guess wrong. The cost is one extra geometry pass, and only on
+        // documents meeting both conditions.
+        let (rotation, image, lines, word_boxes, mrz_band) = match mrz_band
+            .filter(|band| band_in_upper_third(*band, image.height()))
+        {
+            Some(_) => {
+                if verbose {
+                    eprintln!(
+                        "[synthpass-ocr] orientation: confident MRZ band in upper third at {rotation}°; flipping 180°"
+                    );
+                }
+                let flipped = rotate_image(&image, 180);
+                let (lines, word_boxes) = geometry_pass(&self.engine, &flipped).unwrap_or_default();
+                let mrz_band = geometry::detect_mrz_band(&lines, MRZ_CHARSET);
+                ((rotation + 180) % 360, flipped, lines, word_boxes, mrz_band)
+            }
+            None => (rotation, image, lines, word_boxes, mrz_band),
+        };
         let portrait = geometry::detect_portrait(&word_boxes, image.width(), image.height());
 
         let overall_started = Instant::now();
@@ -277,7 +324,24 @@ impl NativeOcr {
         // (seeded at 1) — a `zip` counter rather than a manually incremented
         // one so clippy's `explicit_counter_loop` stays clean; its value at
         // the top of each iteration is exactly "passes run so far".
-        let variants = preprocess::mrz_variants(&image).into_iter().enumerate();
+        //
+        // The geometry-detected band (A2's `mrz_band`, computed above) is
+        // chained on strictly as *trailing* extras after every existing
+        // `mrz_variants` entry — never modifying `mrz_variants` itself, so no
+        // specimen that already validates on one of those can regress. The
+        // loop below breaks on the first checksum-valid MRZ, so these are
+        // only ever reached once every blind/isolated variant has already
+        // failed. `geometry_band_variants` itself is the cheap part: it
+        // returns nothing when there's no confident band, or when the band
+        // it found is close enough to the blind crop to be a duplicate (see
+        // its doc comment), so this costs nothing on the common case.
+        let geometry_variants = mrz_band
+            .map(|band| preprocess::geometry_band_variants(&image, band))
+            .unwrap_or_default();
+        let variants = preprocess::mrz_variants(&image)
+            .into_iter()
+            .chain(geometry_variants)
+            .enumerate();
         for (passes_run, (i, variant)) in (1usize..).zip(variants) {
             if passes_run >= max_passes {
                 if verbose {
@@ -374,9 +438,13 @@ const ROTATION_MARGIN: f64 = 1.2;
 /// so this reliably catches a sideways photo but cannot on its own tell a
 /// right-side-up page from a fully upside-down one — disambiguating that
 /// would need a recognition-confidence signal, which this deliberately does
-/// not run (see [`ROTATION_MARGIN`]'s doc comment). This is a known gap, not
-/// a hidden assumption: revisit if upside-down photographs turn out to be
-/// common in the corpus.
+/// not run (see [`ROTATION_MARGIN`]'s doc comment). This function does not
+/// close that gap; `recognize_detailed` does, one layer up, using the
+/// content-and-geometry `mrz_band` signal it computes right after calling
+/// this (see [`band_in_upper_third`]) — a content-based tie-break, not a
+/// generic recognition-confidence one, and only ever a correction *after*
+/// this function has already run, never a change to what this function
+/// itself returns.
 ///
 /// Returns `None` (meaning "keep the image as-is") when no candidate beats
 /// 0° by [`ROTATION_MARGIN`], including whenever `ocrs` detection itself
@@ -401,6 +469,21 @@ fn choose_rotation(engine: &OcrsEngine, image: &RgbImage) -> Option<(u16, RgbIma
         }
     }
     best.map(|(angle, rotated, _)| (angle, rotated))
+}
+
+/// Does `band`'s vertical centre sit in the page's upper third? The signal
+/// `recognize_detailed`'s post-`choose_rotation` MRZ tie-break acts on (see
+/// there). "Upper third" rather than "upper half": the MRZ is generally the
+/// bottom-most content block on an ICAO layout, so even a photo/data-heavy
+/// front side rarely pushes a correctly-oriented MRZ band's centre past the
+/// halfway line — a stricter third keeps the tie-break from firing on a page
+/// that's merely MRZ-heavy in its layout rather than genuinely upside-down.
+fn band_in_upper_third(band: BBox, image_h: u32) -> bool {
+    if image_h == 0 {
+        return false;
+    }
+    let center_y = f64::from(band.y) + f64::from(band.h) / 2.0;
+    center_y < f64::from(image_h) / 3.0
 }
 
 /// Detection-only orientation score for one candidate rotation — see
@@ -583,6 +666,31 @@ fn mrz_shaped_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn band_in_upper_third_true_only_near_the_top() {
+        let image_h = 900;
+        let top_band = BBox {
+            x: 0.0,
+            y: 50.0,
+            w: 400.0,
+            h: 60.0,
+        }; // centre at 80, well under 300 (a third of 900)
+        assert!(band_in_upper_third(top_band, image_h));
+
+        let bottom_band = BBox {
+            x: 0.0,
+            y: 750.0,
+            w: 400.0,
+            h: 60.0,
+        }; // centre at 780, the ordinary upright-MRZ location
+        assert!(!band_in_upper_third(bottom_band, image_h));
+
+        assert!(
+            !band_in_upper_third(top_band, 0),
+            "zero-height image must not divide by zero"
+        );
+    }
 
     #[test]
     fn mrz_shaped_lines_keeps_mrz_and_drops_noise() {
