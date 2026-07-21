@@ -1,37 +1,106 @@
-# 🪪 SynthPass (formerly multi-level-id-strip / mlis)
+# 🪪 SynthPass
 
 <!-- Language / backend -->
 ![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
 ![Tokio](https://img.shields.io/badge/Tokio-0B7261?style=flat&logo=rust&logoColor=white)
 ![Axum](https://img.shields.io/badge/Axum-000000?style=flat&logo=rust&logoColor=white)
-<!-- Coverage -->
-[![World coverage](https://img.shields.io/badge/world%20coverage-11%2F230%20countries-yellow?style=flat)](docs/CORPUS_COVERAGE.md)
 <!-- ML / inference -->
 ![llama.cpp](https://img.shields.io/badge/llama.cpp-in--process-555555?style=flat)
 ![Qwen 2.5](https://img.shields.io/badge/Qwen%202.5-1.5B%20q4__k__m-6236FF?style=flat)
-<!-- OCR / runtime -->
 ![ocrs](https://img.shields.io/badge/ocrs%2Frten-OCR%20in--process-FF6600?style=flat)
-<!-- MRZ / demo -->
-![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat&logo=webassembly&logoColor=white)
+<!-- Standards / demo -->
 ![ICAO 9303](https://img.shields.io/badge/ICAO%209303-MRZ%20checksums-0B7261?style=flat)
-[![Live demo](https://img.shields.io/badge/live%20demo-GitHub%20Pages-222222?style=flat&logo=github&logoColor=white)](https://ruledicaprio.github.io/multi-level-id-strip/)
+![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat&logo=webassembly&logoColor=white)
+[![Live demo](https://img.shields.io/badge/live%20demo-GitHub%20Pages-222222?style=flat&logo=github&logoColor=white)](https://ruledicaprio.github.io/SynthPass/)
+[![Corpus coverage](https://img.shields.io/badge/world%20coverage-11%2F230%20countries-yellow?style=flat)](docs/CORPUS_COVERAGE.md)
 <!-- Posture -->
 ![Air-gapped](https://img.shields.io/badge/deploy-air--gapped-10B981?style=flat)
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists. Full version-by-version history lives in [CHANGELOG.md](CHANGELOG.md); architecture rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Identity-document intelligence that runs entirely on your own machine.** SynthPass
+*generates* perfectly-labelled synthetic identity documents, *benchmarks* extraction against
+that ground truth, and *extracts* structured JSON from real documents — with **zero cloud
+calls** at any stage.
 
-## ✨ Features
+The extraction path validates documents **deterministically via ICAO 9303 MRZ check digits**
+(Tier 1) and only falls back to a local quantized LLM (Tier 2) when no valid MRZ exists. The
+generation path produces unmistakably synthetic, watermarked documents whose labels are correct
+*by construction* — the ground truth the benchmark grades against.
 
-- **Zero cloud calls.** OCR and LLM inference both run in-process on your machine — no PII ever leaves it, in the CLI, the web app, or the browser demo.
-- **Deterministic first (Tier 1).** ICAO 9303 MRZ check digits (7-3-1 weighting) mathematically prove a faithful read for any document with a machine-readable zone — no model, no hallucination risk, and it's tried before the LLM on every document.
-- **LLM fallback (Tier 2), only when needed.** When no valid MRZ exists, a quantized Qwen 2.5 1.5B model (in-process, CPU-only) fills the same extraction schema — see the [accuracy caveats](#-in-process-llm-fallback-tier-2-v060) stated plainly, not oversold.
-- **No Docker, no Python, no sidecars.** OCR ([`synthpass-ocr`](crates/synthpass-ocr/), pure-Rust `ocrs`/`rten`) and Tier-2 inference ([`synthpass-llm`](crates/synthpass-llm/), `llama-cpp-2`) both run inside the same binary, unchanged on Windows/macOS/Linux.
-- **Image formats:** JPEG, PNG, WebP, TIFF, BMP, GIF. (PDF and HEIC/HEIF aren't supported — see [why](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like).)
-- **Offline, Ed25519-signed licensing.** Extraction is meterable and sellable without the binary ever phoning home — see [Licensing](#-licensing-v080).
-- **Single static binary (v1.0.0).** `synthpass`/`synthpass-serve` also build as one statically-linked `x86_64-unknown-linux-musl` file with the OCR models baked in — see [Static musl release](#-static-musl-release-v100).
-- **Three ways to run it:** the CLI, a self-hostable Axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — Rust compiled to WebAssembly with a self-hosted, zero-CDN OCR runtime, no server at all.
+> **What this is for:** testing, validation, benchmarking, and AI/ML training data for
+> identity-document systems — letting teams build and prove their pipelines without ever
+> touching real customer PII. It is **not** a tool for producing documents that imitate genuine
+> credentials: every generated artifact carries a mandatory synthetic watermark and a generic,
+> non-country template, enforced in code. See [docs/BRANDING.md](docs/BRANDING.md) §4.
+
+*Formerly `multi-level-id-strip` / `mlis`; see [docs/REBRAND_MIGRATION.md](docs/REBRAND_MIGRATION.md)
+for the crate-rename mapping.*
+
+## 📚 Contents
+
+- [Why it's built this way](#-why-its-built-this-way)
+- [How it works](#-how-it-works)
+- [See it work](#️-see-it-work)
+- [Quickstart](#-quickstart)
+- [Extraction: Tier 1 and Tier 2](#-extraction-tier-1-and-tier-2)
+- [Generation and benchmarking](#-generation-and-benchmarking)
+- [Accuracy, stated plainly](#-accuracy-stated-plainly)
+- [Configuration](#️-configuration)
+- [Licensing](#-licensing)
+- [Air-gapped deployment](#-air-gapped-deployment)
+- [Repository layout](#-repository-layout)
+- [Security](#-security)
+- [Documentation](#-documentation)
+- [Acknowledgments](#-acknowledgments)
+- [License](#-license)
+
+## 🎯 Why it's built this way
+
+Two principles drive every design decision, and they are non-negotiable:
+
+- **Deterministic before probabilistic.** A checksum that can *prove* an answer always runs
+  before a model that can only guess one. Given the same seed and parameters, generated output
+  is byte-identical — reproducibility is treated as a correctness property, not a convenience.
+- **Air-gapped or it does not ship.** There are zero network calls in the processing path. Model
+  and font fetches are explicit, checksum-verified bootstrap steps, never runtime behaviour. No
+  telemetry, no model CDN, no exceptions.
+
+Supporting invariants: everything runs **in one process** (no Docker, no Python, no sidecars);
+new dependencies must be pure Rust or justify themselves in writing; every PII-bearing value is
+zeroized on drop and the audit trail is SHA-256-only.
+
+Full reasoning in [docs/VISION.md](docs/VISION.md); engineering rationale and trade-offs in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## 🔀 How it works
+
+```mermaid
+flowchart LR
+    A["📷 ID photo"] --> B["🔎 Read the text<br/>(OCR)"]
+    B --> C{"Machine-readable<br/>zone found?"}
+    C -->|"Yes"| D["✅ Verify checksums<br/>instant, deterministic"]
+    C -->|"No"| E["🧠 Local LLM fallback<br/>reads the layout"]
+    D --> F["📦 Structured JSON"]
+    E --> F
+```
+
+Every document is checked against its own printed math first — that is what makes the green path
+instant and *provably* correct rather than probably right. The model only runs on documents that
+need it. Both stages run in the same process, on your machine, unchanged on Windows, macOS and
+Linux.
+
+The generation half closes the loop: synthetic documents carry labels that are correct by
+construction, so accuracy claims come from a harness rather than from vibes.
+
+```mermaid
+flowchart LR
+    GEN["🏭 synthpass-gen<br/>seeded, watermarked"] --> CORPUS["🏷️ labelled corpus"]
+    CORPUS --> BENCH["📊 synthpass-bench"]
+    BENCH --> GATE{"CI accuracy gate"}
+    GATE -->|"regression"| BLOCK["merge blocked"]
+    GATE -->|"pass"| MERGE["merge allowed"]
+```
 
 ## 🖼️ See it work
 
@@ -42,9 +111,9 @@ $ synthpass Croatian_passport_data_page.jpg
 ✔ SPECIMEN SPECIMEN · HRV passport 007007007 · verified in <1s, LLM never ran
 ```
 
-That's a real run against the public-domain specimen above (from [`samples/`](samples/)):
-every ICAO 9303 check digit on the printed MRZ verified mathematically, so the deterministic
-**Tier 1** path handled it end-to-end — no LLM call, no guessing.
+A real run against the public-domain specimen above (from [`samples/`](samples/)): every ICAO
+9303 check digit on the printed MRZ verified mathematically, so the deterministic **Tier 1** path
+handled it end to end — no model call, no guessing.
 
 <details>
 <summary>Full JSON output</summary>
@@ -69,278 +138,327 @@ every ICAO 9303 check digit on the printed MRZ verified mathematically, so the d
 }
 ```
 
-`in_date: false` — the specimen expired in 2014 (the live output also carries an exact
+`in_date: false` — the specimen expired in 2014 (live output also carries an exact
 `days_until_expiry`). A valid composite check digit proves a faithful **read** of the printed
 zone; whether the document is *in date* is a separate, non-cryptographic judgement.
 
 </details>
 
-**[Try it yourself, live →](https://ruledicaprio.github.io/multi-level-id-strip/)** Same Rust
-code, compiled to WebAssembly, running in your browser tab — no install, no upload to any
-server. Snap or upload a photo and watch the fields fill in; the result is shown for 10 seconds
-with a copy button, then wiped. **No data is ever persistent — there is no server.**
-
-## 📚 Contents
-
-- [How it works](#-how-it-works)
-- [Deterministic MRZ validation (Tier 1)](#-deterministic-mrz-validation-tier-1)
-- [In-process LLM fallback (Tier 2)](#-in-process-llm-fallback-tier-2-v060)
-- [Quickstart](#-quickstart)
-- [Configuration](#-configuration)
-- [Licensing](#-licensing-v080)
-- [Static musl release](#-static-musl-release-v100)
-- [Synthetic document generation](#-synthetic-document-generation-v20-new)
-- [Repository Layout](#-repository-layout)
-- [Security](#-security-tier-3)
-- [More documentation](#-more-documentation)
-- [Acknowledgments](#-acknowledgments)
-- [License](#-license)
-
-## 🔀 How it works
-
-```mermaid
-flowchart LR
-    A["📷 ID photo"] --> B["🔎 Read the text<br/>(OCR)"]
-    B --> C{"Machine-readable<br/>zone found?"}
-    C -->|"Yes"| D["✅ Verify checksums<br/>instant, deterministic"]
-    C -->|"No"| E["🧠 AI fallback<br/>reads the layout"]
-    D --> F["📦 Structured JSON"]
-    E --> F
-```
-
-Every document is checked against its own printed math first (Tier 1) — that's what makes the
-green path instant and provably correct, not just "probably right." The AI model (Tier 2) only
-runs on the documents that need it. Both stages run **in the same process**, on your machine —
-no Docker, no Python, no network call, on Windows/macOS/Linux alike. Full engineering detail
-(the pluggable trait boundary, what got deleted along the way, why) is in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## 🔐 Deterministic MRZ validation (Tier 1)
-
-The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser: TD1/TD2/TD3, every check digit verified (7-3-1 weighting), with **checksum-verified OCR repair** — common misreads (`B`↔`8`, `O`↔`0`, filler runs read as `K`/`L`, dropped or hallucinated characters) are corrected by generating candidate readings and letting the composite check digit prove which one matches the printed zone. A valid composite is mathematical proof of a faithful read; a failed one flags a bad scan or a tampered document. When Tier 1 validates, the LLM never runs: extraction is instant, deterministic and hallucination-free.
-
-> **Date validity ≠ authenticity.** A valid MRZ checksum and self-consistent dates prove the extraction faithfully matches what's printed on the document — not that the document itself is genuine or unaltered. This is an OCR/data-integrity tool, not a forgery-detection tool.
-
-## 🧠 In-process LLM fallback (Tier 2, v0.6.0)
-
-When no valid MRZ exists, Tier 2 asks a quantized Qwen 2.5 1.5B model to read the OCR Markdown and fill the same [`Extraction`](crates/synthpass-core/src/lib.rs) schema Tier 1 produces. That model runs **in the same process** as the CLI or web server — [`synthpass-llm`](crates/synthpass-llm/) loads the GGUF once via [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2), verifies its SHA-256 against a known-good hash before first use, and keeps it warm for the process lifetime. There's no sidecar to start, no gRPC port to open, and (as of v0.7.5) no Python anywhere in this codebase at all.
-
-This is explicitly a probabilistic fallback, not a second source of truth: a 1.5B model reading garbled OCR of a document it's never seen the layout for will not match a deterministic checksum for accuracy, and the field-level parity harness (`crates/synthpass-llm/tests/parity.rs`) exists to catch regressions in that fallback quality, not to promise perfection. That asymmetry is *why* Tier 1 exists and is tried first on every document.
+**[Try it live →](https://ruledicaprio.github.io/SynthPass/)** The same Rust code compiled to
+WebAssembly, running in your browser tab — no install, no server, no upload. Results are shown
+for 10 seconds with a copy button, then wiped. **Nothing is persisted, because there is nowhere
+to persist it to.**
 
 ## 🚀 Quickstart
 
-No Docker or Python required to *run* synthpass — both OCR and Tier 2 run in-process. Image input only (JPEG, PNG,
-WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like) for why. Extraction needs a license — see [Licensing](#-licensing-v080) below, or set `SYNTHPASS_LICENSE_SKIP=1` while developing.
+Neither Docker nor Python is required to *run* SynthPass. Input is images only — JPEG, PNG, WebP,
+TIFF, BMP, GIF. PDF and HEIC/HEIF are deliberately unsupported
+([why](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like)).
 
-> **Windows, building from source:** Tier 2 (`llama-cpp-2`) compiles `llama.cpp`'s C++ code and
-> needs CMake + LLVM/libclang + MSVC Build Tools installed — a much heavier ask than plain Rust.
-> If step 2 below fails with a `llama-cpp-sys-2` build error, that's this, not a broken clone —
-> use the Docker path instead, no local toolchain needed.
-
-Clone to running, start to finish:
+> **Building on Windows:** Tier 2 (`llama-cpp-2`) compiles `llama.cpp`'s C++ and needs CMake,
+> LLVM/libclang and MSVC Build Tools — a heavier ask than plain Rust. A `llama-cpp-sys-2` build
+> error at step 2 is this, not a broken clone; use the Docker path below instead.
 
 ```powershell
-git clone https://github.com/ruledicaprio/multi-level-id-strip.git
-cd multi-level-id-strip
+git clone https://github.com/ruledicaprio/SynthPass.git
+cd SynthPass
 
 # 1. Download the Tier-2 model (~1 GB, not tracked in git).
 curl -L -o qwen2.5-1.5b-instruct-q4_k_m.gguf `
   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
-# The two OCR .rten weight files (~12 MB total) download + SHA-256-verify
-# automatically on first run — no manual step needed for those.
+# The two OCR .rten weights (~12 MB) download and SHA-256-verify on first run.
 
-# 2. Preflight: checks OCR/inferer/license and config before a real run.
+# 2. Preflight: checks OCR, inferer, license and config before a real run.
 cargo run -p synthpass-cli -- doctor
 
-# 3. Extract a document (skip the license gate for local dev/testing).
+# 3. Extract a document (skip the license gate for local development).
 $env:SYNTHPASS_LICENSE_SKIP = "1"
 cargo run -p synthpass-cli -- samples/Croatian_passport_data_page.jpg
 
-# 4. ...or run the web app instead — upload page + JSON API on http://127.0.0.1:8080
+# 4. ...or run the web app — upload page + JSON API on http://127.0.0.1:8080
 cargo run -p synthpass-serve
 ```
 
 ```powershell
-# API example (against synthpass-serve from step 4):
+# API example, against synthpass-serve from step 4:
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
-**No local toolchain? Run the same steps inside the Docker image CI itself uses** —
-`docker/Dockerfile.builder` (Rust + CMake + LLVM/clang + MSVC-equivalent, pre-built):
-
 <details>
-<summary>Windows (PowerShell)</summary>
+<summary><b>No local toolchain?</b> Run the same steps in the Docker image CI uses</summary>
+
+`docker/Dockerfile.builder` ships Rust + CMake + LLVM/clang, pre-built:
 
 ```powershell
+# Windows (PowerShell)
 docker build -f docker/Dockerfile.builder -t synthpass-builder:latest .
 docker run --rm -e SYNTHPASS_LICENSE_SKIP=1 -v "${PWD}:/work" `
   -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry `
   -w /work synthpass-builder:latest cargo run -p synthpass-cli -- doctor
 ```
 
-</details>
-
-<details>
-<summary>Linux / macOS (bash)</summary>
-
 ```bash
+# Linux / macOS
 docker build -f docker/Dockerfile.builder -t synthpass-builder:latest .
 docker run --rm -e SYNTHPASS_LICENSE_SKIP=1 -v "$PWD:/work" \
   -v synthpass_target:/work/target -v synthpass_cargo_registry:/usr/local/cargo/registry \
   -w /work synthpass-builder:latest cargo run -p synthpass-cli -- doctor
 ```
 
+Swap the trailing command for any step above. For `synthpass-serve`, drop
+`-e SYNTHPASS_LICENSE_SKIP=1` and add `-p 8080:8080`. Git Bash on Windows needs
+`MSYS_NO_PATHCONV=1` before `docker run`, or it mangles `-w /work` into a Windows path.
+
+**Environment variables do not cross into the container on their own** — setting
+`$env:SYNTHPASS_LICENSE_SKIP = "1"` only affects your host shell; `docker run` needs its own
+`-e` flag, as shown. See [CONTRIBUTING.md](CONTRIBUTING.md#building--testing) for the full
+build/test/cross-compile reference.
+
 </details>
 
-Swap the trailing `cargo run -p synthpass-cli -- doctor` for any of steps 2-4 above (for step 4,
-`synthpass-serve`, drop `-e SYNTHPASS_LICENSE_SKIP=1` and add `-p 8080:8080` instead). Git Bash on
-Windows needs one extra prefix: `MSYS_NO_PATHCONV=1` before `docker run` (otherwise it mangles
-`-w /work` into a Windows path) — see [CONTRIBUTING.md](CONTRIBUTING.md#building--testing) for
-the full build/test/cross-compile reference.
+### CLI commands
 
-> **Env vars don't cross into the container on their own.** Setting `$env:SYNTHPASS_LICENSE_SKIP = "1"`
-> (or `export SYNTHPASS_LICENSE_SKIP=1`) only affects your host shell — `docker run` needs its own
-> `-e SYNTHPASS_LICENSE_SKIP=1` to forward it in, as shown above. Same for any other `SYNTHPASS_*` variable
-> you want the containerized run to see.
+| Command | What it does |
+| --- | --- |
+| `synthpass <file>` | Extract one document to `<file>.json` |
+| `synthpass generate` | Produce synthetic labelled documents (no license needed) |
+| `synthpass doctor` | Preflight OCR, inferer, license and configuration |
+| `synthpass fingerprint` | Print this machine's license fingerprint |
+| `synthpass verify-license` | Validate a `license.mlis` against the embedded key |
+| `synthpass decrypt <file>` | Decrypt output written with `SYNTHPASS_KEY` |
 
-## ⚙️ Configuration
+## 🔐 Extraction: Tier 1 and Tier 2
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `SYNTHPASS_OCR_ENGINE` | `rust` | `rust` is the only engine since v1.2.0 (any other value warns and falls back) |
-| `SYNTHPASS_OCR_MODEL_DIR` | `.` (repo root) | directory holding `text-detection.rten` / `text-recognition.rten`, `rust` engine only |
-| `SYNTHPASS_OCR_DETECTION_SHA256` / `SYNTHPASS_OCR_RECOGNITION_SHA256` | *(built-in hash)* | override the expected checksums, `rust` engine only |
-| `SYNTHPASS_OCR_MODEL_SKIP_VERIFY` | *(unset)* | skip the `rust` engine's model checksum verification |
-| `SYNTHPASS_OCR_AUTO_DOWNLOAD` | `1` | `rust` engine: fetch missing `.rten` files automatically; `0` requires pre-staged files |
-| `SYNTHPASS_MODEL_PATH` | `./qwen2.5-1.5b-instruct-q4_k_m.gguf` | GGUF path |
-| `SYNTHPASS_MODEL_N_CTX` | `2048` | context window (tokens) |
-| `SYNTHPASS_MODEL_SHA256` / `SYNTHPASS_MODEL_SKIP_VERIFY` | *(built-in hash)* / *(unset)* | override the expected model checksum, or skip verification |
-| `SYNTHPASS_MAX_QUEUE_DEPTH` | `4` | `synthpass-serve`: reject uploads with 503 once this many Tier-2 requests are queued/in-flight |
-| `SYNTHPASS_TOKEN` | *(unset)* | require `Authorization: Bearer <token>`; **mandatory for non-loopback `BIND_ADDR`** |
-| `SYNTHPASS_TLS_CERT` / `SYNTHPASS_TLS_KEY` | *(unset)* | enable rustls TLS on `synthpass-serve` |
-| `SYNTHPASS_AUDIT_LOG` | *(unset)* | append PII-free SHA-256 audit records (JSONL) |
-| `SYNTHPASS_KEY` | *(unset)* | base64 32-byte AES-256 key → encrypt output to `<input>.json.enc` (`synthpass decrypt` to read) |
-| `SYNTHPASS_LICENSE_PATH` | `license.mlis` | path to the signed license file |
-| `SYNTHPASS_LICENSE_SKIP` | *(unset)* | `1` bypasses license enforcement entirely (local development/CI) |
-| `SYNTHPASS_LICENSE_PUBKEY` | *(embedded)* | override the embedded verifying key (base64), for testing |
+**Tier 1 — deterministic.** The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser
+covering TD1/TD2/TD3 with every check digit verified (7-3-1 weighting), plus **checksum-verified
+OCR repair**: common misreads (`B`↔`8`, `O`↔`0`, filler runs read as `K`/`L`, dropped or
+hallucinated characters) are corrected by generating candidate readings and letting the composite
+check digit prove which one matches the printed zone. When Tier 1 validates, the LLM never runs —
+extraction is instant, deterministic and hallucination-free.
 
-> **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/synthpass-llm`). The OCR engine (`synthpass-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows.
->
-> **OCR accuracy note:** Tier-1 extraction hits **17/18 (94%)** of the MRZ-bearing specimens in [`samples/`](samples/) (down to a 360×225 ID-card rear), with zero false positives on the no-MRZ control images — measured by the corpus harness at [`crates/synthpass-ocr/examples/mrz_corpus.rs`](crates/synthpass-ocr/examples/mrz_corpus.rs). When the general OCR pass can't produce a checksum-valid MRZ, targeted retry passes (MRZ-charset-constrained recognition over preprocessed crops) run automatically; the ICAO check digits decide which reading — if any — is trusted. When Tier 1 still misses, Tier 2 runs as usual. The one exception is a documented, permanent case: a physically redacted specimen whose MRZ data was never printed on the page (see [docs/CORPUS_COVERAGE.md](docs/CORPUS_COVERAGE.md)), not a recoverable OCR gap.
+> **Validity ≠ authenticity.** A valid checksum proves the extraction faithfully matches what is
+> printed — not that the document is genuine or unaltered. This is an OCR/data-integrity tool,
+> never a forgery-detection tool, and that line does not move.
 
-## 🔑 Licensing (v0.8.0)
+**Tier 2 — probabilistic, only when needed.** With no valid MRZ, a quantized Qwen 2.5 1.5B model
+reads the OCR Markdown and fills the same [`Extraction`](crates/synthpass-core/src/lib.rs) schema.
+[`synthpass-llm`](crates/synthpass-llm/) loads the GGUF once via
+[`llama-cpp-2`](https://crates.io/crates/llama-cpp-2), verifies its SHA-256 against a known-good
+hash before first use, and keeps it warm for the process lifetime — no sidecar, no gRPC port, no
+Python anywhere in the codebase.
 
-Extraction requires an offline, Ed25519-signed license — set once and checked with no network
-call. For local development, skip enforcement entirely:
-```powershell
-$env:SYNTHPASS_LICENSE_SKIP = "1"
-```
-Full customer (`fingerprint` → `verify-license`) and vendor (`keygen` → `issue-license`) CLI
-walkthroughs live in **[docs/LICENSING.md](docs/LICENSING.md)**. Design rationale — signed-bytes
-format, `verify_strict`, the fingerprint scheme, and the threat model stated plainly — is in
-[docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptographic-licensing-v080).
+This is explicitly a fallback, not a second source of truth: a 1.5B model reading garbled OCR of a
+layout it has never seen will not match a checksum for accuracy. The parity harness
+(`crates/synthpass-llm/tests/parity.rs`) exists to catch regressions in that fallback, not to
+promise perfection. That asymmetry is *why* Tier 1 exists and runs first on every document.
 
-## 📦 Static musl release (v1.0.0)
+## 🧪 Generation and benchmarking
 
-For a true "copy one file to an air-gapped machine" deployment, `synthpass`/`synthpass-serve` also build as
-single, statically-linked `x86_64-unknown-linux-musl` binaries with the OCR models baked in — no
-Docker, no runtime network access, no shared libraries to install on the target machine.
-
-```bash
-# Build (needs the musl target + Zig + cargo-zigbuild — see docker/Dockerfile.builder,
-# or CONTRIBUTING.md's "Cross-compiling to musl locally" section):
-cargo zigbuild --release --target x86_64-unknown-linux-musl -p synthpass-cli -p synthpass-serve \
-  --features ocr-embedded
-
-file target/x86_64-unknown-linux-musl/release/synthpass   # → "statically linked, stripped"
-```
-
-```mermaid
-flowchart LR
-    SRC["source + Cargo.toml"] -->|"cargo zigbuild<br/>--target musl<br/>--features ocr-embedded"| BIN["synthpass / synthpass-serve<br/>(~22-26 MB, static)"]
-    RTEN[".rten OCR models<br/>(SHA-256 verified)"] -.->|"include_bytes!<br/>at build time"| BIN
-    BIN -->|"copy to target"| AIR["air-gapped machine<br/>(no network needed)"]
-    GGUF["qwen2.5 GGUF<br/>(~1 GB, separate download)"] -->|"copy alongside"| AIR
-    AIR -->|"synthpass fingerprint"| FP["fingerprint string"]
-    FP -->|"send to vendor"| LIC["license.mlis<br/>(Ed25519-signed)"]
-    LIC -->|"drop beside binary"| AIR
-    AIR -->|"synthpass &lt;file&gt;"| OUT2["JSON output"]
-```
-
-Deploy: copy `synthpass`, `synthpass-serve`, and the separately-downloaded GGUF model onto the target
-machine, run `synthpass fingerprint` to get an identifier, obtain a license bound to it, drop
-`license.mlis` beside the binary, then run `synthpass <file>` — no further setup. See
-[docs/ARCHITECTURE.md §10](docs/ARCHITECTURE.md#10-v100-and-beyond)
-for the full toolchain rationale (why Zig over `cross-rs`/manual `musl-gcc`) and known
-limitations. `docker/Dockerfile.musl` packages the same binaries into a minimal `FROM scratch`
-image, if you'd rather run it in a container than as a raw binary.
-
-## 🧪 Synthetic document generation (v2.0, new)
-
-`synthpass generate` produces fictional, fully-labelled passport images for testing OCR/extraction
-pipelines and benchmarking — no license required, since no real PII is ever involved:
+`synthpass generate` produces fictional, fully-labelled documents for testing and benchmarking —
+**no license required**, because no real PII is ever involved:
 
 ```powershell
 cargo run -p synthpass-cli -- generate --count 3 --seed 1 --profile mobile --out-dir out/
 ```
 
 Each document gets a deterministic identity (same seed → byte-identical output), a valid TD3 MRZ
-(`mrz::format_td3`, checksum-verified), and a capture-degradation pass (`clean` | `mobile` |
-`scanner` | `worn` | `border-kiosk`) simulating real-world capture conditions. Every render carries
-a **mandatory synthetic watermark and a generic, non-country template** — enforced in code, not
-just documentation — plus a `.json` sidecar with per-field ground-truth bounding boxes for training
-or evaluation. This is the first milestone (M1–M3) of the platform's generation half; see
-[docs/ROADMAP.md](docs/ROADMAP.md) for what's next and [docs/VISION.md](docs/VISION.md) for why.
+via `mrz::format_td3`, and a capture-degradation pass (`clean` | `mobile` | `scanner` | `worn` |
+`border-kiosk`) simulating real-world capture. Every render carries a **mandatory synthetic
+watermark and a generic, non-country template** — enforced in code, not merely documented — plus a
+`.json` sidecar with per-field ground-truth bounding boxes. Text renders with vendored OFL fonts
+(OCR-B and PT Sans, embedded by default; `--no-default-features` falls back to placeholder bars).
 
-> **Status:** VIZ/MRZ text currently renders as placeholder bars until OFL fonts are vendored at
-> `crates/synthpass-gen/fonts/` (see that directory's README) — labels and the watermark are
-> already 100% accurate regardless.
+`synthpass-bench` runs that generated corpus back through the *real* extraction pipeline and
+reports how much of it survives:
 
-## 📁 Repository Layout
+```powershell
+cargo run -p synthpass-bench -- --count 100 --seed 1 --profile clean
+```
+
+Reports are generated, never hand-edited, and CI gates every PR on a hit-rate floor so a
+regression blocks the merge. See [docs/SYNTHPASS.md](docs/SYNTHPASS.md) for the methodology and
+[docs/ADVERSARIAL.md](docs/ADVERSARIAL.md) for the degraded-profile red-team corpus.
+
+## 📊 Accuracy, stated plainly
+
+Two different corpora measure two different things. Quoting only the flattering one would be
+dishonest, so both are here.
+
+| Corpus | What it measures | Result |
+| --- | --- | --- |
+| **Real specimens** ([`samples/`](samples/)) | Tier-1 hit rate on public-domain scans of genuine document designs | **17/18 (94%)** MRZ-bearing specimens, zero false positives on no-MRZ controls |
+| **Generated** (`synthpass-bench`, 100 seeds, `clean`) | Tier-1 hit rate on synthetic documents end-to-end | **~55%** — CI gates at a 30% floor |
+
+The generated-corpus number is much lower than the real-specimen number, and that gap is real:
+misses cluster on the 14-character `personal_number` field, consistent with per-character OCR
+noise compounding over a longer field rather than a single fixable defect. The CI floor sits
+deliberately below the measured value to absorb cross-platform variance in OCR inference without
+becoming flaky. Full account in [docs/ROADMAP.md](docs/ROADMAP.md)'s M4 notes.
+
+When the general OCR pass cannot produce a checksum-valid MRZ, targeted retry passes
+(MRZ-charset-constrained recognition over preprocessed crops) run automatically, and the check
+digits decide which reading — if any — is trusted. Tier 2 runs only after Tier 1 still misses. One
+documented permanent miss is a physically redacted specimen whose MRZ was never printed at all
+(see [docs/CORPUS_COVERAGE.md](docs/CORPUS_COVERAGE.md)) — not a recoverable OCR gap.
+
+## ⚙️ Configuration
+
+**OCR**
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SYNTHPASS_OCR_MODEL_DIR` | `.` | Directory holding `text-detection.rten` / `text-recognition.rten` |
+| `SYNTHPASS_OCR_AUTO_DOWNLOAD` | `1` | Fetch missing `.rten` files automatically; `0` requires pre-staged files |
+| `SYNTHPASS_OCR_DETECTION_SHA256` / `..._RECOGNITION_SHA256` | *(built-in)* | Override expected checksums |
+| `SYNTHPASS_OCR_MODEL_SKIP_VERIFY` | *(unset)* | Skip OCR model checksum verification |
+| `SYNTHPASS_OCR_MAX_PASSES` / `SYNTHPASS_OCR_MAX_SECONDS` | `7` / `45` | Bound the MRZ retry loop |
+| `SYNTHPASS_OCR_VERBOSE` | *(unset)* | `1` logs per-pass timing and region counts |
+| `SYNTHPASS_OCR_ENGINE` | `rust` | Only `rust` since v1.2.0; any other value warns and falls back |
+
+**Tier-2 model**
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SYNTHPASS_MODEL_PATH` | `./qwen2.5-1.5b-instruct-q4_k_m.gguf` | GGUF path — any GGUF works |
+| `SYNTHPASS_MODEL_N_CTX` | `2048` | Context window in tokens |
+| `SYNTHPASS_MODEL_SHA256` / `SYNTHPASS_MODEL_SKIP_VERIFY` | *(built-in)* / *(unset)* | Re-pin or skip the integrity check |
+| `SYNTHPASS_LLM_CONTEXTS` | `1` | Concurrent Tier-2 contexts; raise only if the hardware has room |
+
+**Server** (`synthpass-serve`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BIND_ADDR` | `127.0.0.1:8080` | Listen address |
+| `SYNTHPASS_TOKEN` | *(unset)* | Require `Authorization: Bearer <token>`; **mandatory for non-loopback binds** |
+| `SYNTHPASS_TLS_CERT` / `SYNTHPASS_TLS_KEY` | *(unset)* | Enable rustls TLS |
+| `SYNTHPASS_MAX_QUEUE_DEPTH` | `4` | Reject uploads with `503` + `Retry-After` once this many Tier-2 requests are queued or in flight |
+| `WORK_DIR` / `KEEP_WORK` | `work` / *(unset)* | Scratch directory; keep intermediates for debugging |
+
+`GET /health` reports OCR engine, inference-backend status and license expiry. It sits outside the
+auth layer deliberately — infrastructure probes rarely carry credentials, and a health check that
+requires auth defeats half its purpose.
+
+**Security and licensing**
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SYNTHPASS_AUDIT_LOG` | *(unset)* | Append PII-free SHA-256 audit records (JSONL) |
+| `SYNTHPASS_KEY` | *(unset)* | Base64 32-byte AES-256 key → encrypt output to `<input>.json.enc` |
+| `SYNTHPASS_LICENSE_PATH` | `license.mlis` | Path to the signed license file |
+| `SYNTHPASS_LICENSE_SKIP` | *(unset)* | `1` bypasses license enforcement (development/CI) |
+| `SYNTHPASS_LICENSE_PUBKEY` | *(embedded)* | Override the embedded verifying key, for testing |
+
+> **Windows note:** the Tier-2 backend needs CMake + LLVM/libclang + MSVC to build
+> `llama-cpp-2`'s bundled `llama.cpp`. The OCR engine needs no native toolchain at all.
+
+## 🔑 Licensing
+
+Extraction requires an offline, **Ed25519-signed** license — checked locally with no network call
+of any kind. For local development, bypass it entirely with `SYNTHPASS_LICENSE_SKIP=1`. Generation
+and benchmarking never require a license, because they involve no real PII.
+
+Customer (`fingerprint` → `verify-license`) and vendor (`keygen` → `issue-license`) walkthroughs
+are in **[docs/LICENSING.md](docs/LICENSING.md)**. The signed-bytes format, `verify_strict`
+rationale, fingerprint scheme and — stated plainly — the threat model are in
+[docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptographic-licensing-v080).
+
+> **This meters the official binary; it is not DRM.** The source is public, so anyone who rebuilds
+> can strip the check. It exists to make the product sellable and auditable without phoning home,
+> and it is not sold as tamper-proof.
+
+## 📦 Air-gapped deployment
+
+For a genuine "copy one file to an isolated machine" deployment, both binaries build as
+statically-linked `x86_64-unknown-linux-musl` executables with the OCR models baked in — no
+Docker, no shared libraries, no runtime network access.
+
+```bash
+cargo zigbuild --release --target x86_64-unknown-linux-musl \
+  -p synthpass-cli -p synthpass-serve --features ocr-embedded
+
+file target/x86_64-unknown-linux-musl/release/synthpass   # → "statically linked, stripped"
+```
+
+```mermaid
+flowchart LR
+    SRC["source + Cargo.toml"] -->|"cargo zigbuild<br/>--features ocr-embedded"| BIN["synthpass / synthpass-serve<br/>(~22-26 MB, static)"]
+    RTEN[".rten OCR models<br/>(SHA-256 verified)"] -.->|"include_bytes!"| BIN
+    BIN -->|"copy to target"| AIR["air-gapped machine"]
+    GGUF["qwen2.5 GGUF<br/>(~1 GB, separate)"] -->|"copy alongside"| AIR
+    AIR -->|"synthpass fingerprint"| FP["fingerprint string"]
+    FP -->|"send to vendor"| LIC["license.mlis<br/>(Ed25519-signed)"]
+    LIC -->|"drop beside binary"| AIR
+    AIR -->|"synthpass &lt;file&gt;"| OUT["JSON output"]
+```
+
+Copy the binaries and the GGUF onto the target, run `synthpass fingerprint`, obtain a license
+bound to it, drop `license.mlis` beside the binary, and run. Toolchain rationale (why Zig over
+`cross-rs` or manual `musl-gcc`) and known limitations are in
+[docs/ARCHITECTURE.md §10](docs/ARCHITECTURE.md#10-v100-and-beyond).
+`docker/Dockerfile.musl` packages the same binaries into a `FROM scratch` image.
+
+## 📁 Repository layout
 
 ```
 ├── crates/
-│   ├── mrz/           Zero-dep ICAO 9303 engine: TD1/TD2/TD3, checksum-verified OCR
-│   │                  repair, date-plausibility, ISO/ICAO country names
-│   ├── mrz-wasm/      wasm-bindgen wrapper for the browser demo
-│   ├── synthpass-gen/      Synthetic passport factory: seeded identities, TD3 MRZ, layout/
-│   │                  render/labels, capture-degradation profiles (see generation section above)
-│   ├── synthpass-core/     Canonical Extraction schema + Tier-3 audit/crypto helpers
-│   ├── synthpass-llm/      In-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`, ChatML
-│   │                  prompting, JSON repair, model integrity check
-│   ├── synthpass-ocr/      In-process pure-Rust OCR: ocrs/rten, model download + integrity check
-│   ├── synthpass-license/  Offline licensing: Ed25519 sign/verify, fingerprint, vendor issuer binary
-│   │                  (`vendor` feature; keygen + issue-license, never shipped to customers)
-│   ├── synthpass-pipeline/ OcrEngine trait (rust | native) → Tier 1 MRZ → Tier 2
-│   │                  InferBackend (native) → JSON. Image-only, license-agnostic.
-│   ├── synthpass-cli/      CLI front-end (binary `synthpass`; extract, `generate`, `decrypt`,
-│   │                  `fingerprint`, `verify-license`, `doctor`)
-│   └── synthpass-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
-│                      bearer auth + TLS + license enforcement
-├── docker/           Optional container packaging: Dockerfile.serve + docker-compose.yml
-│                     for `synthpass-serve` — not required for any functional code path
-├── web/              GitHub Pages demo site (static, client-side only)
-├── samples/          Public-domain specimen documents + example outputs
-└── docs/             Vision, roadmap, branding, architecture, licensing — see "More documentation"
+│   ├── mrz/                Zero-dependency ICAO 9303 engine: TD1/TD2/TD3, checksum-verified
+│   │                       OCR repair, TD3 emission, date plausibility, ISO/ICAO country names
+│   ├── mrz-wasm/           wasm-bindgen wrapper powering the browser demo
+│   ├── synthpass-gen/      Synthetic document factory: seeded identities, TD3 MRZ, layout/
+│   │                       render/labels, capture-degradation profiles, mandatory watermark
+│   ├── synthpass-bench/    Benchmark harness + corpus runner behind the CI accuracy gate
+│   ├── synthpass-core/     Canonical Extraction schema (v1 + v2) and audit/crypto helpers
+│   ├── synthpass-ocr/      In-process pure-Rust OCR: ocrs/rten, preprocessing, model integrity
+│   ├── synthpass-llm/      In-process Tier-2 inference: Qwen GGUF via llama-cpp-2, ChatML
+│   │                       prompting, JSON repair, model integrity check
+│   ├── synthpass-license/  Offline Ed25519 licensing: sign/verify, fingerprint, vendor issuer
+│   │                       (`vendor` feature — never shipped to customers)
+│   ├── synthpass-pipeline/ OcrEngine → Tier 1 MRZ → Tier 2 InferBackend → JSON.
+│   │                       Image-only, license-agnostic.
+│   ├── synthpass-cli/      CLI front-end (binary `synthpass`)
+│   └── synthpass-serve/    axum web app: upload page, POST /api/extract with SSE progress,
+│                           GET /health, bearer auth, TLS, license enforcement
+├── docs/                   Vision, roadmap, branding, architecture, licensing, corpus coverage
+├── docker/                 Builder, musl and serve images + compose file
+├── fuzz/                   cargo-fuzz targets for the untrusted OCR ingest path
+├── samples/                Public-domain specimen documents and expected outputs
+├── scripts/                Development helpers
+└── web/                    GitHub Pages demo (static, client-side only)
 ```
 
-## 🔒 Security (Tier 3)
+## 🔒 Security
 
-Everything runs on loopback by default. `synthpass-serve` **refuses a non-loopback bind unless `SYNTHPASS_TOKEN` is set**, then enforces `Authorization: Bearer <token>` on every request; set `SYNTHPASS_TLS_CERT`/`SYNTHPASS_TLS_KEY` for rustls TLS. Uploaded files and intermediate artifacts are deleted after each request. Two optional at-rest controls: `SYNTHPASS_AUDIT_LOG` appends a **PII-free** SHA-256 audit trail (fingerprint + method + timestamp, no names/numbers), and `SYNTHPASS_KEY` (base64 32-byte AES-256) encrypts the output JSON to `<input>.json.enc` — decrypt with `synthpass decrypt`. The native Tier-2 model itself is SHA-256-verified before use, so a tampered or substituted GGUF fails closed rather than running silently. As of **v0.9.0**, the highest-value in-memory PII carriers (the extracted fields, the AES key, the raw Tier-2 output) are wiped on drop (`zeroize`, best-effort — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7 for exactly what is and isn't covered), and the untrusted OCR ingest path is fuzz-tested — an always-on `proptest` suite plus opt-in `cargo-fuzz` coverage (`cargo fuzz run mrz_find_and_parse` / `mrz_parse_td` from `fuzz/`). Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Everything binds to loopback by default, and `synthpass-serve` **refuses a non-loopback bind
+unless `SYNTHPASS_TOKEN` is set**, then requires `Authorization: Bearer <token>` on every request.
+`SYNTHPASS_TLS_CERT`/`SYNTHPASS_TLS_KEY` enable rustls TLS. Uploads and intermediate artifacts are
+deleted after each request.
 
-## 📄 More documentation
+Two optional at-rest controls: `SYNTHPASS_AUDIT_LOG` appends a **PII-free** SHA-256 audit trail
+(fingerprint, method, timestamp — never names or numbers), and `SYNTHPASS_KEY` encrypts output
+JSON with AES-256-GCM. The Tier-2 model is SHA-256-verified before use, so a substituted GGUF
+fails closed rather than running silently. The highest-value in-memory PII carriers — extracted
+fields, the AES key, raw model output — are wiped on drop via `zeroize` (best-effort; see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7 for exactly what is and is not covered), and the
+untrusted OCR ingest path is fuzz-tested with an always-on `proptest` suite plus opt-in
+`cargo-fuzz` targets (`cargo fuzz run mrz_find_and_parse` / `mrz_parse_td` from `fuzz/`).
 
-Full index: [docs/README.md](docs/README.md). Highlights:
+Vulnerability reporting and the full deployment checklist: [SECURITY.md](SECURITY.md).
+
+## 📄 Documentation
+
+Full index: [docs/README.md](docs/README.md).
 
 | Doc | What it covers |
 | --- | --- |
-| [docs/VISION.md](docs/VISION.md) | Dual mission (technical sovereignty + compliance-by-design), long-term direction |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | M1–M6 milestones, Definition of Done per phase, what's shipped vs. planned |
-| [docs/BRANDING.md](docs/BRANDING.md) | The Identra/SynthPass naming model, messaging guardrails, commercial tiers |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Engineering rationale, trade-offs, and version-by-version design history |
-| [docs/LICENSING.md](docs/LICENSING.md) | Full customer/vendor CLI walkthrough for the offline licensing flow |
-| [docs/CORPUS_COVERAGE.md](docs/CORPUS_COVERAGE.md) | Per-country OCR corpus status and how to add a specimen |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Build/test setup (native + Docker), fuzzing, git workflow, PR checklist |
+| [docs/VISION.md](docs/VISION.md) | Why the project exists, its principles, and permanent non-goals |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | M1–M6 milestones with a Definition of Done each; shipped vs. planned |
+| [docs/BRANDING.md](docs/BRANDING.md) | Identra/SynthPass naming, messaging guardrails, commercial tiers |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Engineering rationale, trade-offs, design history |
+| [docs/SYNTHPASS.md](docs/SYNTHPASS.md) | Generation and benchmarking methodology |
+| [docs/ADVERSARIAL.md](docs/ADVERSARIAL.md) | Degraded-capture red-team corpus |
+| [docs/LICENSING.md](docs/LICENSING.md) | Customer and vendor CLI walkthroughs |
+| [docs/CORPUS_COVERAGE.md](docs/CORPUS_COVERAGE.md) | Per-country corpus status and how to add a specimen |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build/test setup, fuzzing, git workflow, review checklist |
 | [SECURITY.md](SECURITY.md) | Threat model, deployment checklist, vulnerability reporting |
 | [CHANGELOG.md](CHANGELOG.md) | Full version-by-version history |
 
@@ -348,14 +466,30 @@ Questions or bugs: [open an issue](https://github.com/ruledicaprio/SynthPass/iss
 
 ## 🙏 Acknowledgments
 
-A solo-authored project where the ideas, architecture and direction are the human's; the execution was AI-accelerated.
+A solo-authored project where the ideas, architecture and direction are the human's; the execution
+was AI-accelerated, across more than one model.
 
-- **Rusmir Skopljak** ([@ruledicaprio](https://github.com/ruledicaprio)) — creator, author, architecture & direction
-- **Claude Opus 4.8 / Sonnet 5** (Anthropic) — orchestration & implementation
-- **DeepSeek v4 Pro** — advisory / architectural review
+- **Rusmir Skopljak** ([@ruledicaprio](https://github.com/ruledicaprio)) — creator, architecture and direction
+- **Claude Opus 4.8 / Sonnet 5** (Anthropic) — orchestration and implementation across the codebase
+- **DeepSeek** — foundational architectural strategy
+  ([docs/FOUNDATIONAL_STRATEGY.md](docs/FOUNDATIONAL_STRATEGY.md)), advisory and architectural review
+- **GPT** (OpenAI) — the v2.0 roadmap and design records
+  ([docs/synthpass_v2_0.md](docs/synthpass_v2_0.md),
+  [docs/mlis_v2_0_0_preliminary_design.md](docs/mlis_v2_0_0_preliminary_design.md)), building on
+  DeepSeek's foundational strategy
 
-Copyright and authorship rest with the human author; the AI tools are credited as assistants, not legal authors.
+Copyright and authorship rest with the human author; the AI tools are credited as assistants, not
+legal authors.
 
 ## 📜 License
 
-[MIT](LICENSE) © Rusmir Skopljak. Bundled third-party licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the security policy is in [SECURITY.md](SECURITY.md). The MRZ demo's OCR-B model (`web/tessdata/mrz.traineddata`) is © [DoubangoTelecom](https://github.com/DoubangoTelecom/tesseractMRZ), BSD-3-Clause.
+[MIT](LICENSE) © Rusmir Skopljak. Bundled third-party licenses are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The MRZ demo's OCR-B model
+(`web/tessdata/mrz.traineddata`) is © [DoubangoTelecom](https://github.com/DoubangoTelecom/tesseractMRZ),
+BSD-3-Clause. Vendored generator fonts (OCR-B, PT Sans) are OFL 1.1 — see
+`crates/synthpass-gen/fonts/README.md`.
+
+---
+
+*SynthPass is an open-source project under the Identra stewardship. See
+[docs/BRANDING.md](docs/BRANDING.md) for trademark and attribution guidance.*
