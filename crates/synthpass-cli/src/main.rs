@@ -6,9 +6,10 @@
 //! cargo run -p synthpass-cli -- samples/Croatian_passport_data_page.jpg
 //! ```
 
+use serde_json::json;
 use std::env;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use synthpass_pipeline::Pipeline;
 
 mod generate;
@@ -81,6 +82,10 @@ fn print_usage() {
     println!();
     println!("Commands");
     println!("  synthpass <path_to_image>          extract (needs a license — see below)");
+    println!(
+        "  synthpass batch <dir|glob>         extract every image in a directory or matching a glob"
+    );
+    println!("                                     (needs the license 'batch' feature; emits one JSON per input + a summary)");
     println!("  synthpass decrypt <file.json.enc>  decrypt (needs SYNTHPASS_KEY)");
     println!("  synthpass doctor                   preflight: OCR/inferer/license, config sanity");
     println!(
@@ -113,6 +118,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("synthpass {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        // `synthpass batch <dir|glob>` — extract every matching image, one JSON
+        // object per input plus a summary (M5 job queue). Stays synchronous
+        // end to end (submit + wait) — only synthpass-serve exposes async job
+        // endpoints; see synthpass_pipeline::jobs's module doc.
+        "batch" => return batch_command(args.get(2).map(String::as_str)).await,
         // `synthpass decrypt <file>` — decrypt an AES-256-GCM payload to stdout.
         "decrypt" => return decrypt_command(args.get(2).map(String::as_str)),
         // `synthpass generate` — synthetic passport image + label-JSON factory (M3).
@@ -224,6 +234,190 @@ fn check_license() -> Result<(), String> {
     synthpass_license::load_and_check(Path::new(&path))
         .map(|_| ())
         .map_err(|e| format!("license check failed ({path}): {e}"))
+}
+
+/// Like [`check_license`], but for one specific license feature — used by
+/// `batch` (gated on `FEATURE_BATCH`, the same commercial boundary
+/// `synthpass-serve`'s `/api/extract/batch` enforces; BRANDING §5: capacity
+/// is a legitimate paid gate, core single-document extraction is not).
+fn check_license_feature(feature: &str) -> Result<(), String> {
+    if env::var("SYNTHPASS_LICENSE_SKIP").as_deref() == Ok("1") {
+        return Ok(());
+    }
+    let path = env::var("SYNTHPASS_LICENSE_PATH").unwrap_or_else(|_| DEFAULT_LICENSE_PATH.into());
+    let status = synthpass_license::load_and_check(Path::new(&path))
+        .map_err(|e| format!("license check failed ({path}): {e}"))?;
+    synthpass_license::check_feature(&status.payload, feature).map_err(|e| e.to_string())
+}
+
+/// File extensions the pure-Rust OCR engine can read — mirrors
+/// `synthpass_pipeline::ocr`'s own allowlist (not exported from that crate,
+/// so duplicated here rather than pulling in a new dependency just to share
+/// eight string literals).
+fn looks_like_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| {
+            matches!(
+                e.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "tif" | "tiff" | "bmp" | "gif"
+            )
+        })
+}
+
+/// Minimal shell-style glob matcher: `*` matches any run of characters
+/// (including none), `?` matches exactly one. No bracket/brace/double-star
+/// support — this exists only so `synthpass batch` can accept a pattern like
+/// `samples/*.jpg` without pulling in a `glob` crate dependency for it.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    fn helper(p: &[u8], n: &[u8]) -> bool {
+        match (p.first(), n.first()) {
+            (None, None) => true,
+            (Some(b'*'), _) => helper(&p[1..], n) || (!n.is_empty() && helper(p, &n[1..])),
+            (Some(b'?'), Some(_)) => helper(&p[1..], &n[1..]),
+            (Some(pc), Some(nc)) if pc == nc => helper(&p[1..], &n[1..]),
+            _ => false,
+        }
+    }
+    helper(pattern.as_bytes(), name.as_bytes())
+}
+
+/// Resolves `synthpass batch <arg>`'s argument into a sorted list of image
+/// files: every image directly inside `arg` if it's a directory, or every
+/// file in `arg`'s parent directory matching `arg`'s filename as a glob
+/// pattern otherwise (e.g. `samples/*.jpg`). Sorted so batch output order is
+/// deterministic across runs (directory iteration order is not guaranteed
+/// by any platform).
+fn collect_batch_inputs(arg: &str) -> Result<Vec<PathBuf>, String> {
+    let path = Path::new(arg);
+    if path.is_dir() {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+            .map_err(|e| format!("could not read directory {arg}: {e}"))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|p| p.is_file() && looks_like_image(p))
+            .collect();
+        files.sort();
+        return Ok(files);
+    }
+
+    let (dir, pattern) = match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => (
+            parent.to_path_buf(),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        None => (PathBuf::from("."), arg.to_string()),
+    };
+    if !dir.is_dir() {
+        return Err(format!("{arg}: not a file, directory, or resolvable glob"));
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("could not read directory {}: {e}", dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| glob_match(&pattern, name))
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("no files matched {arg}"));
+    }
+    Ok(files)
+}
+
+/// `synthpass batch <dir|glob>` — extract every matching image. Submits the
+/// whole batch as one job via `Pipeline::submit` (exercising the same job
+/// abstraction `synthpass-serve`'s async endpoints use) and immediately
+/// `.wait()`s on it, so from the operator's point of view this behaves like
+/// a simple loop over `synthpass <path>` — one JSON object printed per
+/// input, in the same order they were collected, plus a summary line.
+async fn batch_command(arg: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(arg) = arg else {
+        eprintln!("Usage: synthpass batch <dir|glob>");
+        return Ok(());
+    };
+
+    if let Err(e) = check_license_feature(synthpass_license::FEATURE_BATCH) {
+        eprintln!("❌ {e}");
+        eprintln!(
+            "   run `synthpass fingerprint` and contact your vendor for a license with the \
+             'batch' feature, or set SYNTHPASS_LICENSE_SKIP=1 for local development"
+        );
+        return Ok(());
+    }
+
+    let inputs = match collect_batch_inputs(arg) {
+        Ok(inputs) if inputs.is_empty() => {
+            eprintln!("❌ no image files found at {arg}");
+            return Ok(());
+        }
+        Ok(inputs) => inputs,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            return Ok(());
+        }
+    };
+
+    println!(
+        "🔄 [Rust] submitting {} document(s) from {arg} for batch extraction...",
+        inputs.len()
+    );
+
+    let pipeline = Pipeline::from_env();
+    let handle = pipeline.submit(inputs.clone());
+    let status = handle.wait().await;
+
+    let mut tier1 = 0usize;
+    let mut tier2 = 0usize;
+    let mut failed = 0usize;
+
+    for (input, entry) in inputs.iter().zip(handle.documents().iter()) {
+        let record = match &entry.status {
+            synthpass_pipeline::DocumentStatus::Done(result) => {
+                match result.method {
+                    synthpass_pipeline::Method::MrzDeterministic => tier1 += 1,
+                    synthpass_pipeline::Method::Llm => tier2 += 1,
+                }
+                json!({
+                    "input": input.display().to_string(),
+                    "method": result.method.as_str(),
+                    "extracted": result.extracted,
+                    "error": result.llm_error,
+                })
+            }
+            synthpass_pipeline::DocumentStatus::Failed(e) => {
+                failed += 1;
+                json!({ "input": input.display().to_string(), "error": e })
+            }
+            // Unreachable once `wait()` has returned (every document is
+            // populated by then — see `JobHandle::wait`'s doc), but degrade
+            // to a clearly-labeled record rather than panicking if that
+            // invariant is ever violated.
+            synthpass_pipeline::DocumentStatus::Pending => {
+                failed += 1;
+                json!({
+                    "input": input.display().to_string(),
+                    "error": "job ended without a result for this document",
+                })
+            }
+        };
+        println!("{}", serde_json::to_string_pretty(&record)?);
+    }
+
+    println!(
+        "🎉 [Rust] batch complete ({}): {tier1} via Tier 1, {tier2} via Tier 2, {failed} failed",
+        status.as_str()
+    );
+
+    Ok(())
 }
 
 /// `synthpass doctor`'s license block: required unless `SYNTHPASS_LICENSE_SKIP=1`
