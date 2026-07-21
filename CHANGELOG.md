@@ -26,7 +26,22 @@ extraction.
   `synthpass generate` CLI subcommand — the first roadmap milestones (M1–M3) toward the
   unified generation+extraction platform. Every output carries a mandatory synthetic
   watermark and generic template; no real PII is ever produced, so this command has no
-  license requirement.
+  license requirement. Two OFL-licensed fonts (OCR-B and PT Sans) are vendored and embedded by
+  default, so generated documents render real glyphs instead of placeholder bars.
+- **New crate `synthpass-bench` + CI accuracy gate (M4).** Measures whether a `synthpass-gen`
+  document survives the real Tier-1 pipeline (OCR → checksum-valid MRZ), via a reusable library
+  (`check_document`/`HitResult`) and a `synthpass-bench` corpus-runner binary that writes a
+  generated JSON report (`--count`/`--seed`/`--profile`/`--min-hit-rate`, see
+  [`docs/SYNTHPASS.md`](docs/SYNTHPASS.md)). CI now gates every PR on a 50-seed `clean`-profile
+  run. Honestly measured Tier-1 hit rate: **~55%** over a 100-seed sample — the CI gate is set to
+  a 30% floor with margin, not the number itself, to absorb cross-platform OCR variance; see
+  `docs/ROADMAP.md`'s M4 notes for the full account. Uncovered and fixed a genuine MRZ
+  glyph-rendering bug along the way: MRZ characters were flowed by font advance instead of the
+  fixed per-character layout grid, and anti-aliasing used a hard threshold instead of blending by
+  coverage — both fixed, improving the measured rate from 50% to 60% on the sample it was found
+  against. The four degraded `CaptureProfile` variants (mobile/scanner/worn/border-kiosk) are
+  measured/reported as an adversarial corpus but not yet CI-gated; see
+  [`docs/ADVERSARIAL.md`](docs/ADVERSARIAL.md).
 
 ### Changed
 - **The required Linux CI job no longer runs ~25 min.** The two real-model OCR smoke steps

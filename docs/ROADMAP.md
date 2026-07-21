@@ -82,17 +82,17 @@ flowchart LR
   `ofl/ptsans`, © ParaType) are vendored at `crates/synthpass-gen/fonts/` (see that directory's
   README for provenance/license and [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)); build
   with `--features embedded-fonts` for real glyph rendering instead of placeholder bars.
-- **M4's measurement library, corpus runner, and CI gate are done** (`synthpass-bench`, PRs
-  #29/#30/this one). The real number, measured over a 100-seed `clean`-profile corpus after fixing
-  a genuine MRZ glyph-rendering bug (misaligned character cells + thresholded anti-aliasing, PR
-  #28, which took the rate from 50% to 60% on a smaller sample): **55%**, well under the
+- **M4 is done** (`synthpass-bench`, PRs #27–#31): measurement library, corpus runner, CI accuracy
+  gate, and [`docs/SYNTHPASS.md`](SYNTHPASS.md) / [`docs/ADVERSARIAL.md`](ADVERSARIAL.md) have all
+  shipped. The real number, measured over a 100-seed `clean`-profile corpus after fixing a genuine
+  MRZ glyph-rendering bug (misaligned character cells + thresholded anti-aliasing, PR #28, which
+  took the rate from 50% to 60% on a smaller sample): **55%**, well under the
   originally-aspirational 95%. Root cause of the remaining gap: misses cluster on the 14-character
   `personal_number` field rather than any one systematic defect, consistent with per-character OCR
   noise compounding over a longer field rather than a single fixable rendering bug — closing this
   further is tracked as follow-up work, not blocking M4. The CI gate is set to 30% (a deliberate
   margin below the measured 55%, absorbing cross-platform floating-point variance in OCR inference
-  between machines) so it catches real regressions without being flaky. `docs/SYNTHPASS.md` /
-  `docs/ADVERSARIAL.md` (documenting the degraded-profile corpus) are the remaining M4 items.
+  between machines) so it catches real regressions without being flaky.
 - **M5** has only its `ExtractionV2` schema landed so far (`crates/synthpass-core/src/v2.rs`); the
   rest of the Atlas DoDs (OCR region detection, job queue, observability, licensing-tier
   enforcement, GBNF decoding) are not started.

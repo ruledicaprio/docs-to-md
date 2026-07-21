@@ -20,6 +20,10 @@ that's too long-form for there.
   vendor (`keygen` → `issue-license`) CLI walkthrough for offline licensing.
 - **[CORPUS_COVERAGE.md](CORPUS_COVERAGE.md)** — per-country OCR corpus status and the checklist
   for adding a new specimen.
+- **[SYNTHPASS.md](SYNTHPASS.md)** — how to run the `synthpass-bench` corpus runner locally, its
+  CLI flags, report format, and how the CI accuracy gate works (M4).
+- **[ADVERSARIAL.md](ADVERSARIAL.md)** — the degraded capture profiles (mobile/scanner/worn/
+  border-kiosk) as the adversarial/stress corpus: what each simulates, and gate status.
 
 ## Historical / origin records
 
