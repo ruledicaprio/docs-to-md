@@ -89,11 +89,23 @@ const MRZ_BEAM_WIDTH: u32 = 24;
 /// blind-crop, one full-page, three trailing isolated-band) and
 /// `preprocess::geometry_band_variants` appends at most 2 more (trailing
 /// again, and only when the geometry-detected band differs from the blind
-/// crop); 8 is those plus the general pass, so none is silently truncated by
-/// the pass budget on the worst case — precisely the dense/bilingual scans
-/// the geometry-band variants exist for. The `SYNTHPASS_OCR_MAX_SECONDS`
-/// wall-clock budget is what actually bounds a pathological document.
-const DEFAULT_MAX_PASSES: usize = 8;
+/// crop), so the worst case is 6 + 2 = [`MAX_RETRY_VARIANTS`] retry variants
+/// plus the general pass: **9**. Note the retry loop seeds its counter at 1
+/// for the *first* variant and breaks on `passes_run >= max_passes`, so the
+/// number of variants that can actually run is `max_passes - 1` — an
+/// off-by-one here silently truncates the last variant on exactly the
+/// dense/bilingual scans the geometry-band variants exist for, which is the
+/// failure this budget is sized to avoid. `max_passes_admits_every_variant`
+/// pins the arithmetic so a future variant can't quietly outgrow it. The
+/// `SYNTHPASS_OCR_MAX_SECONDS` wall-clock budget is what actually bounds a
+/// pathological document.
+const DEFAULT_MAX_PASSES: usize = MAX_RETRY_VARIANTS + 1;
+
+/// Worst-case number of retry variants: `preprocess::mrz_variants`'s 6 plus
+/// `preprocess::geometry_band_variants`'s 2. Single-sourced with
+/// [`DEFAULT_MAX_PASSES`] above so the budget and the variant count cannot
+/// drift apart silently — see that constant's doc comment.
+const MAX_RETRY_VARIANTS: usize = 8;
 
 /// Default `SYNTHPASS_OCR_MAX_SECONDS` wall-clock ceiling on the whole
 /// `recognize` call when the env var is unset or invalid. Measured
@@ -730,6 +742,52 @@ mod tests {
         assert_eq!(max_passes(), DEFAULT_MAX_PASSES, "zero falls back");
 
         unsafe { std::env::remove_var("SYNTHPASS_OCR_MAX_PASSES") };
+    }
+
+    /// The default pass budget must admit *every* retry variant, including
+    /// the last one. This is arithmetic, not behaviour, and it is a test
+    /// rather than a comment because a comment is exactly what failed here:
+    /// the budget was first raised to 8 alongside a doc comment asserting
+    /// "6 + 2 more, plus the general pass" — which is 9. The truncation is
+    /// silent (the loop just stops early) and lands only on documents
+    /// producing the full variant set, i.e. the dense/bilingual scans the
+    /// geometry-band variants were added for, so it would have shown up as
+    /// the feature looking weaker than it is rather than as a failure.
+    #[test]
+    fn max_passes_admits_every_variant() {
+        // The loop seeds `passes_run` at 1 for the *first* variant and breaks
+        // on `passes_run >= max_passes`, so the count it actually admits is
+        // one less than the budget. See the retry loop in `recognize_detailed`.
+        let admitted = DEFAULT_MAX_PASSES - 1;
+        assert_eq!(
+            admitted, MAX_RETRY_VARIANTS,
+            "default budget admits {admitted} variants but {MAX_RETRY_VARIANTS} can be produced — \
+             the last one(s) would be silently truncated"
+        );
+    }
+
+    /// Guards the other half of the arithmetic above: `MAX_RETRY_VARIANTS` is
+    /// only meaningful if the variant producers actually stay within it. Both
+    /// are counted against a real (if tiny) image so adding a variant to
+    /// either function without updating the constant fails here rather than
+    /// silently eating the budget.
+    #[test]
+    fn variant_producers_stay_within_the_budgeted_count() {
+        let image = image::RgbImage::from_pixel(400, 600, image::Rgb([255, 255, 255]));
+        let blind = preprocess::mrz_variants(&image);
+        let band = BBox {
+            x: 0.0,
+            y: 20.0,
+            w: 400.0,
+            h: 60.0,
+        };
+        let geometry = preprocess::geometry_band_variants(&image, band);
+        assert!(
+            blind.len() + geometry.len() <= MAX_RETRY_VARIANTS,
+            "producers yielded {} + {} variants, over the budgeted {MAX_RETRY_VARIANTS}",
+            blind.len(),
+            geometry.len()
+        );
     }
 
     #[test]
