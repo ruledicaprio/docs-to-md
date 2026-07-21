@@ -15,6 +15,7 @@ use zeroize::ZeroizeOnDrop;
 pub mod audit;
 #[cfg(feature = "security")]
 pub mod crypt;
+pub mod normalize;
 pub mod v2;
 
 /// A single extracted identity / travel document record.

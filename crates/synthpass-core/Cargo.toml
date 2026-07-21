@@ -7,6 +7,12 @@ edition.workspace = true
 serde = { version = "1", features = ["derive"] }
 # Unconditional: Extraction (PII) is always compiled, not behind `security`.
 zeroize = { version = "1", features = ["derive"] }
+# The zero-dependency ICAO/ISO country table, reused by `normalize` (M5 §8)
+# for its reverse country-name → code lookup — single-sourced with `mrz`'s
+# own `country_name`, never a second copy of the table. Already a workspace
+# member depended on elsewhere (`synthpass-ocr`, `synthpass-pipeline`); this
+# just adds an edge to it, not a new external crate.
+mrz = { path = "../mrz" }
 # Tier-3 security (feature `security`): audit hashing + payload encryption.
 sha2 = { version = "0.10", optional = true }
 aes-gcm = { version = "0.10", optional = true }

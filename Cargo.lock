@@ -2874,6 +2874,7 @@ version = "1.1.0"
 dependencies = [
  "aes-gcm",
  "base64",
+ "mrz",
  "serde",
  "serde_json",
  "sha2 0.10.9",
