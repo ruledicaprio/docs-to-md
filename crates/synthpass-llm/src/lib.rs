@@ -9,6 +9,7 @@
 //! blocking — callers on an async runtime (see `synthpass-pipeline`) must run them
 //! via `spawn_blocking`, mirroring how the native OCR engine is wrapped.
 
+pub mod grammar;
 pub mod prompt;
 pub mod repair;
 pub mod verify;
@@ -29,6 +30,46 @@ use zeroize::Zeroizing;
 const STOP_SEQUENCE: &str = "<|im_end|>";
 /// Mirrors the Python inferer's `max_tokens=500` cap.
 const MAX_NEW_TOKENS: i32 = 500;
+
+/// Whether grammar-constrained decoding is on. Defaults to on; set
+/// `SYNTHPASS_LLM_GRAMMAR=0` to force the pre-Atlas unconstrained path.
+///
+/// This is an escape hatch and a measurement tool, not a tuning knob: it lets
+/// an operator fall back without a rebuild if a particular model interacts
+/// badly with the grammar, and it lets the parity harness measure the same
+/// binary both ways — which is how the constrained-vs-unconstrained delta gets
+/// reported honestly rather than asserted.
+fn grammar_enabled() -> bool {
+    std::env::var("SYNTHPASS_LLM_GRAMMAR").as_deref() != Ok("0")
+}
+
+/// The sampler chain for one generation: the extraction grammar in front of
+/// greedy selection, so every sampled token is one that can still continue a
+/// schema-valid JSON object (Atlas §8).
+///
+/// **Degrades rather than fails.** If the grammar can't be compiled — an
+/// unexpected llama.cpp build, a vocab it can't map — this drops back to plain
+/// greedy decoding and says so once, because a Tier-2 answer salvaged by
+/// [`repair`] is worth more than no answer at all. That path is visible after
+/// the fact in [`repair::repair_fallbacks`] rather than being silent.
+///
+/// Ordering matters: the grammar must sit *before* the selection step so it
+/// masks candidates the selector never gets to consider.
+fn build_sampler(model: &LlamaModel) -> LlamaSampler {
+    if !grammar_enabled() {
+        return LlamaSampler::chain_simple([LlamaSampler::greedy()]);
+    }
+    match LlamaSampler::grammar(model, &grammar::extraction_gbnf(), grammar::GRAMMAR_ROOT) {
+        Ok(g) => LlamaSampler::chain_simple([g, LlamaSampler::greedy()]),
+        Err(e) => {
+            eprintln!(
+                "[synthpass] GBNF grammar unavailable ({e}); falling back to unconstrained \
+                 decoding — Tier-2 output will rely on JSON repair"
+            );
+            LlamaSampler::chain_simple([LlamaSampler::greedy()])
+        }
+    }
+}
 
 pub struct NativeLlm {
     backend: LlamaBackend,
@@ -129,7 +170,7 @@ impl NativeLlm {
         ctx.decode(&mut batch)
             .map_err(|e| format!("prompt decode failed: {e}"))?;
 
-        let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
+        let mut sampler = build_sampler(&self.model);
         // Stateful UTF-8 decoder reused across the whole generation: a single
         // token can be a partial multi-byte character, so decoding must carry
         // state from one `token_to_piece` call to the next.
@@ -139,8 +180,14 @@ impl NativeLlm {
         let mut output = Zeroizing::new(String::new());
 
         while n_cur < end_at {
+            // `sample` already accepts the token it returns (llama.cpp's
+            // `llama_sampler_sample` ends in `llama_sampler_accept`), so there
+            // is deliberately no `accept` call here. Calling one would advance
+            // every *stateful* sampler in the chain twice per token: harmless
+            // for greedy selection, but it desynchronizes the grammar's parse
+            // state until its stack empties and llama.cpp aborts on
+            // `GGML_ASSERT(!stacks.empty())`.
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
-            sampler.accept(token);
 
             if self.model.is_eog_token(token) {
                 break;

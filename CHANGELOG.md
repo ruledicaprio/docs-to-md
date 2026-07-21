@@ -95,11 +95,42 @@ extraction.
   asserts the capture harness is non-empty first, so a broken harness fails instead of pretending.
   Metric labels are a closed set (`method`, `stage`, `le`) with a test enforcing it — unbounded
   label cardinality on a scrape endpoint would be both a Prometheus foot-gun and a data leak.
+- **GBNF-constrained Tier-2 decoding (M5, Atlas §8).** `synthpass-llm` now constrains the model's
+  sampling to a grammar generated *from* `prompt::FIELDS`, so the fields the model is asked for and
+  the fields it is permitted to emit cannot drift apart. The grammar pins JSON **structure only** —
+  the ten keys, in order, each a string or `null` — and deliberately does not constrain values
+  (date layout, `sex` vocabulary, country-code casing), because `Extraction` accepts any string
+  there and encoding a narrower dialect would be a semantic change riding along with a syntactic
+  one. `repair.rs` is demoted from load-bearing to fallback: `parse_extraction` now tries a plain
+  parse first, and the new `needs_repair()` / `repair_fallbacks()` pair make "the grammar is
+  earning its keep" a measurement. Set `SYNTHPASS_LLM_GRAMMAR=0` to fall back to unconstrained
+  decoding. Zero new dependencies — `llama-cpp-2`'s `common` feature already shipped the sampler.
+
+  **Measured, on the 6-document parity corpus with qwen2.5-1.5b-instruct-q4_k_m, reported whichever
+  way it landed:** repair fallbacks **2 → 0**, so the parse-failure class is genuinely eliminated
+  and Atlas §8's "zero repair-fallback invocations" criterion is met. Field match rate is
+  **unchanged at 19/42 (45.2%)** — repair was already successfully salvaging those two documents,
+  so removing the need for it changed nothing downstream. Wall time rose **~55%** (102s → 158s),
+  partly logit masking and partly the grammar forcing all ten keys where the model previously
+  stopped early. This is the outcome `docs/mlis_v2_0_0_preliminary_design.md` §12 flagged as a
+  risk — GBNF on a 1.5B model improves syntax more than semantics — and it is recorded rather than
+  quietly dropped. It ships on by default because making malformed output *unrepresentable* is the
+  "deterministic before probabilistic" principle applied to Tier 2, and the cost falls only on the
+  fallback path that runs when Tier 1 has already failed.
 - **Nightly bench-data-collection workflow.** A new scheduled CI job
   (`.github/workflows/bench-data-collection.yml`) runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on
   a dedicated `bench-data` branch, building a corpus toward future auto-tuning of
   `synthpass-gen`'s degrade parameters. Data collection only — no tuning logic yet.
+
+### Fixed
+- **Double-accept in the Tier-2 sampling loop.** `NativeLlm::generate` called `sampler.accept()`
+  on the token returned by `sampler.sample()`, but llama.cpp's `llama_sampler_sample` already
+  accepts internally — so every token was accepted twice. Harmless while the chain held only a
+  stateless greedy sampler, which is why it sat unnoticed; the moment a *stateful* sampler joined
+  it, the grammar's parse state advanced twice per token until its stack emptied and llama.cpp
+  aborted the process on `GGML_ASSERT(!stacks.empty())`. Found by running the real-model parity
+  harness, not by unit tests — none of which can observe sampler state.
 
 ### Changed
 - **The required Linux CI job no longer runs ~25 min.** The two real-model OCR smoke steps

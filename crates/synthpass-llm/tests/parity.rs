@@ -139,6 +139,20 @@ fn native_llm_field_accuracy_over_sample_set() {
         "\nfield match rate: {matched}/{total} ({:.1}%)",
         rate * 100.0
     );
+    // The Atlas §8 acceptance criterion, reported rather than asserted: with
+    // grammar-constrained decoding on, model output should already be a valid
+    // JSON object, so nothing should reach the repair path. Printing it here
+    // makes "the grammar is earning its keep" a measurement instead of a
+    // belief — and makes it visible when it *isn't*.
+    println!(
+        "repair fallbacks: {} (grammar {})",
+        synthpass_llm::repair::repair_fallbacks(),
+        if std::env::var("SYNTHPASS_LLM_GRAMMAR").as_deref() == Ok("0") {
+            "disabled"
+        } else {
+            "enabled"
+        }
+    );
     // Measured baseline with qwen2.5-1.5b-instruct-q4_k_m: ~33% (date-format
     // normalized). The model is weak on rear-side ID cards and heavily
     // garbled MRZ blocks (SerbianID_back, Slovenian rear) — that's expected
