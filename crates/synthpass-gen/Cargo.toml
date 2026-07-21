@@ -17,11 +17,11 @@ rand_chacha = "0.10"
 ab_glyph = "0.2"
 
 [features]
-default = []
+default = ["embedded-fonts"]
 # Bakes fonts/ocr-b.ttf and fonts/sans.ttf into the binary via `include_bytes!`.
-# Off by default: the fonts are not vendored (see fonts/README.md for how to
-# supply OFL-licensed fonts and build with this feature). With it off, text
-# fields render as placeholder bars in the exact layout rects instead of
-# glyphs, and the two ethics guardrails (synthetic watermark + generic
-# template) still render unconditionally either way.
+# On by default since both fonts are vendored (verified OFL 1.1, see
+# fonts/README.md) — `--no-default-features` falls back to placeholder bars
+# in the exact layout rects instead of glyphs, for callers who don't want the
+# ~480 KB of font bytes baked in. The two ethics guardrails (synthetic
+# watermark + generic template) render unconditionally either way.
 embedded-fonts = []
