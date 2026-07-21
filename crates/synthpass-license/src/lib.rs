@@ -46,9 +46,8 @@ pub struct LicensePayload {
     #[serde(default)]
     pub features: Vec<String>,
     /// A license can refuse to unlock a `synthpass` build older than it was
-    /// issued for. Advisory — enforcement is the caller's choice, [`check`]
-    /// does not look at this field (comparing semver needs no dependency
-    /// here; callers that care can parse it themselves).
+    /// issued for. [`check`] enforces this against `CARGO_PKG_VERSION` when
+    /// present.
     #[serde(default)]
     pub mlis_min_version: Option<String>,
 }
@@ -82,6 +81,13 @@ pub enum LicenseError {
         expires_unix: u64,
     },
     FingerprintMismatch,
+    /// The running binary's `CARGO_PKG_VERSION` doesn't satisfy the
+    /// license's `mlis_min_version`. Also raised (fail closed) when
+    /// `mlis_min_version` itself isn't a parsable `major[.minor[.patch]]`
+    /// string — an unreadable requirement is not a satisfied one.
+    MinVersionUnmet {
+        required: String,
+    },
 }
 
 impl fmt::Display for LicenseError {
@@ -98,6 +104,11 @@ impl fmt::Display for LicenseError {
             Self::FingerprintMismatch => {
                 write!(f, "license is bound to a different machine")
             }
+            Self::MinVersionUnmet { required } => write!(
+                f,
+                "license requires synthpass >= {required} (running {})",
+                env!("CARGO_PKG_VERSION")
+            ),
         }
     }
 }
@@ -169,10 +180,11 @@ pub fn verify_with_key(
     serde_json::from_slice(&payload_bytes).map_err(|e| LicenseError::InvalidPayload(e.to_string()))
 }
 
-/// Expiry + (if bound) fingerprint checks against an already-verified
-/// payload. Pure and deterministic — `now_unix`/`fingerprint` are passed in
-/// rather than read from the clock/machine here, so callers can test it
-/// exactly the way `synthpass-serve`'s existing `startup_refusal` is tested.
+/// Expiry + (if bound) fingerprint + (if set) minimum-version checks against
+/// an already-verified payload. Pure and deterministic — `now_unix`/
+/// `fingerprint` are passed in rather than read from the clock/machine here,
+/// so callers can test it exactly the way `synthpass-serve`'s existing
+/// `startup_refusal` is tested.
 pub fn check(
     payload: &LicensePayload,
     now_unix: u64,
@@ -186,7 +198,44 @@ pub fn check(
     if !payload.hw_fingerprint.is_empty() && payload.hw_fingerprint != fingerprint {
         return Err(LicenseError::FingerprintMismatch);
     }
+    if let Some(required) = &payload.mlis_min_version {
+        if !version_satisfies(env!("CARGO_PKG_VERSION"), required) {
+            return Err(LicenseError::MinVersionUnmet {
+                required: required.clone(),
+            });
+        }
+    }
     Ok(())
+}
+
+/// `true` iff `actual` is >= `required`, both `major[.minor[.patch]]`
+/// (any missing component pads as `0`; a trailing `-pre`/`+build` suffix on
+/// either string is stripped before comparing). Fails closed — an
+/// unparsable `required` string (e.g. non-numeric components) is treated as
+/// unmet, since an unreadable requirement can't be verified as satisfied.
+fn version_satisfies(actual: &str, required: &str) -> bool {
+    let Some(required) = parse_version(required) else {
+        return false;
+    };
+    // `actual` is always this crate's own `CARGO_PKG_VERSION`, so a parse
+    // failure there would mean a broken build, not a license problem —
+    // still fail closed rather than panic.
+    let Some(actual) = parse_version(actual) else {
+        return false;
+    };
+    actual >= required
+}
+
+/// Parses the leading `major[.minor[.patch]]` numeric components of a
+/// version string, ignoring any `-`/`+` suffix (pre-release/build
+/// metadata). Missing trailing components default to `0`.
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let core = v.split(['-', '+']).next().unwrap_or(v);
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+    let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+    Some((major, minor, patch))
 }
 
 /// Convenience used at CLI/serve startup: read `path`, verify the
@@ -278,6 +327,83 @@ mod tests {
     fn unbound_license_accepted_on_any_fingerprint() {
         let payload = sample_payload("", 4_000_000_000);
         check(&payload, 1, "any-machine-at-all").expect("empty hw_fingerprint skips the check");
+    }
+
+    #[test]
+    fn absent_min_version_skips_the_check() {
+        let payload = sample_payload("", 4_000_000_000); // mlis_min_version: None
+        check(&payload, 1, "").expect("no min-version requirement means nothing to enforce");
+    }
+
+    #[test]
+    fn satisfied_min_version_passes_check() {
+        let payload = LicensePayload {
+            mlis_min_version: Some("0.0.1".into()), // trivially satisfied by any real build
+            ..sample_payload("", 4_000_000_000)
+        };
+        check(&payload, 1, "").expect("running version should satisfy a low minimum");
+    }
+
+    #[test]
+    fn unmet_min_version_fails_check() {
+        let payload = LicensePayload {
+            mlis_min_version: Some("999.0.0".into()),
+            ..sample_payload("", 4_000_000_000)
+        };
+        let err = check(&payload, 1, "").expect_err("must reject an unmet minimum version");
+        assert!(matches!(
+            err,
+            LicenseError::MinVersionUnmet { required } if required == "999.0.0"
+        ));
+    }
+
+    #[test]
+    fn malformed_min_version_fails_closed() {
+        let payload = LicensePayload {
+            mlis_min_version: Some("not-a-version".into()),
+            ..sample_payload("", 4_000_000_000)
+        };
+        let err = check(&payload, 1, "").expect_err("unparsable requirement must fail closed");
+        assert!(matches!(err, LicenseError::MinVersionUnmet { .. }));
+    }
+
+    #[test]
+    fn version_satisfies_compares_numeric_components() {
+        assert!(
+            version_satisfies("1.2.3", "1.2.3"),
+            "equal versions satisfy"
+        );
+        assert!(
+            version_satisfies("2.0.0", "1.9.9"),
+            "greater major satisfies"
+        );
+        assert!(
+            version_satisfies("1.3.0", "1.2.9"),
+            "greater minor satisfies"
+        );
+        assert!(
+            version_satisfies("1.2.4", "1.2.3"),
+            "greater patch satisfies"
+        );
+        assert!(!version_satisfies("1.2.3", "1.2.4"), "lesser patch fails");
+        assert!(!version_satisfies("1.1.9", "1.2.0"), "lesser minor fails");
+        assert!(!version_satisfies("0.9.9", "1.0.0"), "lesser major fails");
+        assert!(
+            version_satisfies("1.2", "1.2.0"),
+            "missing components pad as 0"
+        );
+        assert!(
+            version_satisfies("1.2.0", "1.2.0-beta"),
+            "pre-release suffix on the requirement is stripped before comparing"
+        );
+        assert!(
+            !version_satisfies("not-a-version", "1.0.0"),
+            "unparsable actual fails closed"
+        );
+        assert!(
+            !version_satisfies("1.0.0", "not-a-version"),
+            "unparsable required fails closed"
+        );
     }
 
     #[test]
