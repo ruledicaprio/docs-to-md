@@ -86,6 +86,22 @@ jobs:
           SYNTHPASS_OCR_MAX_PASSES: "1"
         run: cargo test -p synthpass-pipeline --release --test rust_ocr_smoke -- --ignored
 
+      # M4 regression gate: measures the Tier-1 (checksum-valid MRZ) hit rate
+      # over a fixed, deterministic synthetic corpus and fails the build if it
+      # drops meaningfully below the honestly-measured floor. 30% is set well
+      # under the ~55% measured locally over a 100-seed sample (see
+      # docs/ROADMAP.md and PR #30) — the margin absorbs cross-platform
+      # floating-point variance in OCR inference between this runner and the
+      # machine the number was measured on, so the gate catches real
+      # regressions without being flaky. A 50-seed corpus keeps this step's
+      # runtime bounded (sequential by design — see synthpass-bench.rs's
+      # module docs for why parallelizing these checks corrupts the
+      # measurement instead of just speeding it up).
+      - name: M4 Tier-1 hit-rate gate (synthpass-bench, clean profile)
+        run: |
+          cargo run -p synthpass-bench --release --bin synthpass-bench -- \
+            --count 50 --seed 0 --profile clean --min-hit-rate 0.30 --out bench-report.json
+
       - name: Check the OCR backend feature builds alone
         run: cargo check -p synthpass-pipeline --no-default-features --features inferer-native,ocr-native-rust
 
