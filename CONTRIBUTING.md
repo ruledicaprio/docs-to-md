@@ -167,6 +167,25 @@ If you work from more than one machine, always `git fetch && git merge --ff-only
 (or `git pull --ff-only`) before branching off — this fails loudly instead of silently diverging
 if another client already pushed work you don't have yet.
 
+## Changelog fragments
+
+**Do not edit `CHANGELOG.md` in a PR.** Add a file to [`changelog.d/`](changelog.d/) instead:
+
+```bash
+cat > changelog.d/<pr-number-or-branch-slug>.added.md <<'EOF'
+- **Short bold lead.** What changed, and what to do about it if it breaks something.
+EOF
+```
+
+Category suffix is one of `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`.
+`CHANGELOG.md` has one append point per section, so two branches open at once conflict on it
+every single time — a file per change has no shared append point, and merge day stops being a
+rebase queue. See [`changelog.d/README.md`](changelog.d/README.md) for the full convention.
+
+At release time, `scripts/assemble-changelog.sh --write` splices the fragments into the topmost
+section of `CHANGELOG.md` and deletes them (run it with no arguments to preview). Purely internal
+changes that a user would never notice need no fragment at all.
+
 ## Commit sign-off
 
 Contributions are accepted under the project's [MIT license](LICENSE). By submitting a PR you certify
