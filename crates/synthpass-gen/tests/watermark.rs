@@ -1,6 +1,7 @@
-//! The synthetic watermark must render even with `embedded-fonts` off (the
-//! default) — it is a mandatory ethics guardrail, not a font-dependent
-//! nicety.
+//! The synthetic watermark must render regardless of the `embedded-fonts`
+//! feature (on by default since the fonts are vendored; off falls back to
+//! placeholder bars) — it is a mandatory ethics guardrail, not a
+//! font-dependent nicety.
 
 use synthpass_gen::layout::WATERMARK;
 use synthpass_gen::{data::generate_passport, generate, GeneratorConfig};
