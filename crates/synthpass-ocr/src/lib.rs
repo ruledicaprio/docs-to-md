@@ -8,6 +8,18 @@
 //! runtime (see `synthpass-pipeline`) must run it via `spawn_blocking`, mirroring
 //! how the native LLM inferer is wrapped.
 //!
+//! # Structured geometry (M5)
+//!
+//! [`NativeOcr::recognize_detailed`] is the richer sibling of `recognize`:
+//! it returns an [`geometry::OcrPage`] with per-line text/bounding boxes, an
+//! auto-detected page rotation, and two layout heuristics (`mrz_band`,
+//! `portrait` — see [`geometry`]'s module docs). `recognize` is now defined
+//! in terms of it (`recognize_detailed(..)?.text`); the retry-pass loop,
+//! pass budget and time budget described below are unchanged and live
+//! inside `recognize_detailed`, so `recognize`'s signature and returned text
+//! are unaffected by this split. See `recognize_detailed`'s own doc comment
+//! for exactly what's new versus what's verbatim.
+//!
 //! # MRZ retry passes
 //!
 //! A general full-page pass runs first. If its output does not contain a
@@ -45,11 +57,14 @@
 pub mod download;
 #[cfg(feature = "embedded-models")]
 pub mod embedded;
+pub mod geometry;
 pub mod preprocess;
 pub mod verify;
 
+pub use geometry::{BBox, OcrLine, OcrPage};
+
 use image::RgbImage;
-use ocrs::{DecodeMethod, ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
+use ocrs::{DecodeMethod, ImageSource, OcrEngine as OcrsEngine, OcrEngineParams, TextItem};
 use rten::Model;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -167,11 +182,67 @@ impl NativeOcr {
     /// If the general pass's text lacks a checksum-valid MRZ, the constrained
     /// retry passes run (see the module docs) and their MRZ-shaped lines are
     /// appended to the returned text.
+    ///
+    /// A thin wrapper over [`Self::recognize_detailed`] — this signature and
+    /// its returned text are unchanged from before this crate gained a
+    /// geometry API. See that method's doc comment for the "unchanged
+    /// verbatim vs. new" boundary that makes this true.
     pub fn recognize(&self, image_path: &Path) -> Result<String, String> {
+        Ok(self.recognize_detailed(image_path)?.text)
+    }
+
+    /// [`Self::recognize`]'s richer sibling: same recognized text, plus
+    /// per-line detail, an auto-detected page rotation, and the `mrz_band`/
+    /// `portrait` layout heuristics (see [`geometry`]'s module docs) —
+    /// together, [`OcrPage`].
+    ///
+    /// **What's unchanged vs. what's new**, for anyone auditing that
+    /// `recognize`'s behaviour didn't shift under this split: everything
+    /// from `overall_started` through the end of the retry loop below is
+    /// the pass budget / time budget / MRZ retry logic from before this
+    /// method existed, untouched line-for-line (still calling the original
+    /// `run_pass`/`region_count`/`mrz_shaped_lines` helpers). What's new is
+    /// layered strictly around it: orientation detection ([`choose_rotation`],
+    /// A3) runs first and — being detection-only and conservatively biased
+    /// toward "no rotation" (see its doc comment) — only ever changes the
+    /// `image` this pipeline sees when it is confident the page is rotated;
+    /// when it isn't, `image` is the same un-rotated buffer `recognize` has
+    /// always run on, so the retry loop below, and therefore `text`, behaves
+    /// identically to before. The structured line/word geometry
+    /// ([`geometry_pass`]) is best-effort and additive: its own detect+
+    /// recognize pass never feeds back into `text`, and a failure in it
+    /// degrades `OcrPage`'s structured fields to empty rather than failing
+    /// this call. Both new steps run *before* `overall_started` is set, so
+    /// neither eats into the retry loop's own wall-clock budget
+    /// (`DEFAULT_MAX_SECONDS`) — they add to this call's total latency, not
+    /// to the retry loop's.
+    pub fn recognize_detailed(&self, image_path: &Path) -> Result<OcrPage, String> {
         let verbose = verbose_enabled();
         let image = image::open(image_path)
             .map_err(|e| format!("failed to open image {}: {e}", image_path.display()))?
             .into_rgb8();
+
+        // A3: auto-rotate before the main pass (detection-only, cheap; see
+        // `choose_rotation`'s doc comment, including its known 0°-vs-180°
+        // limitation). `None` means "keep the image as-is", which also
+        // covers detection failure — orientation is a best-effort
+        // enhancement, never a reason to fail the whole call.
+        let (rotation, image) = match choose_rotation(&self.engine, &image) {
+            Some((angle, rotated)) => {
+                if verbose {
+                    eprintln!("[synthpass-ocr] orientation: auto-rotated {angle}°");
+                }
+                (angle, rotated)
+            }
+            None => (0, image),
+        };
+
+        // A1/A2/A4: structured line/word geometry for this pass, best-effort
+        // (see this method's doc comment on why this is a separate pass
+        // rather than threaded through `run_pass`/`region_count` below).
+        let (lines, word_boxes) = geometry_pass(&self.engine, &image).unwrap_or_default();
+        let mrz_band = geometry::detect_mrz_band(&lines, MRZ_CHARSET);
+        let portrait = geometry::detect_portrait(&word_boxes, image.width(), image.height());
 
         let overall_started = Instant::now();
         let general_started = Instant::now();
@@ -184,7 +255,13 @@ impl NativeOcr {
             );
         }
         if has_valid_mrz(&text) {
-            return Ok(text);
+            return Ok(OcrPage {
+                text,
+                lines,
+                mrz_band,
+                portrait,
+                rotation,
+            });
         }
         if verbose {
             eprintln!("[synthpass-ocr] Tier-1 miss on general pass; MRZ-band candidate lines:");
@@ -258,8 +335,177 @@ impl NativeOcr {
                 }
             }
         }
-        Ok(text)
+        Ok(OcrPage {
+            text,
+            lines,
+            mrz_band,
+            portrait,
+            rotation,
+        })
     }
+}
+
+/// Right-angle rotation candidates probed by [`choose_rotation`] (A3),
+/// clockwise from the page as photographed/scanned. `0°` (no rotation) is
+/// the baseline scored inline in `choose_rotation` rather than listed here.
+const ROTATION_CANDIDATES: [u16; 3] = [90, 180, 270];
+
+/// How much higher a non-zero rotation's line-geometry score must be than
+/// 0°'s before [`choose_rotation`] commits to it. Documents are far more
+/// often already upright than not, and guessing wrong feeds the whole
+/// downstream pipeline a garbled page — so ties and close calls default to
+/// "no rotation", which is also the choice that keeps `recognize()`'s
+/// output byte-identical to its behaviour before this module gained
+/// orientation detection (see `recognize_detailed`'s doc comment).
+const ROTATION_MARGIN: f64 = 1.2;
+
+/// A3 — cheap, detection-only page-orientation heuristic. Scores how
+/// "line-shaped" the detected text is at each right-angle rotation: Latin
+/// text reads in wide, short horizontal lines once `find_text_lines` groups
+/// detected words together; turned 90°/270° sideways, the same words end up
+/// as tall, narrow single-word "lines" instead of being grouped, so the mean
+/// per-line width:height ratio drops sharply. No recognition model is
+/// invoked — four `detect_words`+`find_text_lines` calls (0°, 90°, 180°,
+/// 270°) cost roughly what one recognition pass does, honoring this step's
+/// "keep it cheap" constraint.
+///
+/// Known limitation: the aspect-ratio signal is symmetric under a further
+/// 180° turn (an upside-down horizontal line still measures wide-and-short),
+/// so this reliably catches a sideways photo but cannot on its own tell a
+/// right-side-up page from a fully upside-down one — disambiguating that
+/// would need a recognition-confidence signal, which this deliberately does
+/// not run (see [`ROTATION_MARGIN`]'s doc comment). This is a known gap, not
+/// a hidden assumption: revisit if upside-down photographs turn out to be
+/// common in the corpus.
+///
+/// Returns `None` (meaning "keep the image as-is") when no candidate beats
+/// 0° by [`ROTATION_MARGIN`], including whenever `ocrs` detection itself
+/// fails on any candidate — orientation is a best-effort enhancement, never
+/// a reason to fail the whole recognition call.
+fn choose_rotation(engine: &OcrsEngine, image: &RgbImage) -> Option<(u16, RgbImage)> {
+    let zero_score = orientation_score(engine, image).unwrap_or(0.0);
+    let mut best: Option<(u16, RgbImage, f64)> = None;
+    for &angle in &ROTATION_CANDIDATES {
+        let candidate = rotate_image(image, angle);
+        let Ok(score) = orientation_score(engine, &candidate) else {
+            continue;
+        };
+        if score <= zero_score * ROTATION_MARGIN {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|&(_, _, best_score)| score > best_score)
+        {
+            best = Some((angle, candidate, score));
+        }
+    }
+    best.map(|(angle, rotated, _)| (angle, rotated))
+}
+
+/// Detection-only orientation score for one candidate rotation — see
+/// [`choose_rotation`]'s doc comment for what this measures and why.
+fn orientation_score(engine: &OcrsEngine, image: &RgbImage) -> Result<f64, String> {
+    let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())
+        .map_err(|e| format!("failed to prepare image source: {e}"))?;
+    let input = engine
+        .prepare_input(source)
+        .map_err(|e| format!("failed to prepare ocr input: {e}"))?;
+    let words = engine
+        .detect_words(&input)
+        .map_err(|e| format!("ocr word detection failed: {e}"))?;
+    if words.is_empty() {
+        return Ok(0.0);
+    }
+    let lines = engine.find_text_lines(&input, &words);
+    if lines.is_empty() {
+        return Ok(0.0);
+    }
+    let mut total = 0.0;
+    for line_words in &lines {
+        if line_words.is_empty() {
+            continue;
+        }
+        let width_sum: f64 = line_words.iter().map(|w| f64::from(w.width())).sum();
+        let height_mean: f64 = line_words
+            .iter()
+            .map(|w| f64::from(w.height()))
+            .sum::<f64>()
+            / line_words.len() as f64;
+        if height_mean > 0.0 {
+            total += width_sum / height_mean;
+        }
+    }
+    Ok(total / lines.len() as f64)
+}
+
+/// Rotate `image` clockwise by `angle` degrees (must be 0/90/180/270 — any
+/// other value is treated as a no-op copy). Lossless pixel rotation via the
+/// `image` crate (no new dependency): exact for right angles, unlike
+/// `preprocess::deskew`'s bilinear arbitrary-angle rotation for small-tilt
+/// correction.
+fn rotate_image(image: &RgbImage, angle: u16) -> RgbImage {
+    match angle {
+        90 => image::imageops::rotate90(image),
+        180 => image::imageops::rotate180(image),
+        270 => image::imageops::rotate270(image),
+        _ => image.clone(),
+    }
+}
+
+/// One detect+group+recognize pass over `image`, used only to surface
+/// structured line/word geometry for [`OcrPage`] (A1/A2/A4) — run
+/// separately from (and in addition to) [`run_pass`]/[`region_count`] below
+/// rather than threaded through them, so the general pass's `text` output
+/// and error messages stay byte-for-byte what `recognize` has always
+/// produced (see `recognize_detailed`'s doc comment). The cost is one extra
+/// detect+recognize pass on the general image; correctness of `recognize`'s
+/// output was judged worth more than avoiding it.
+///
+/// Best-effort: a failure here (mapped to `Err` and discarded by the caller
+/// via `.unwrap_or_default()`) degrades `OcrPage`'s structured fields to
+/// empty, never the returned `text`.
+fn geometry_pass(
+    engine: &OcrsEngine,
+    image: &RgbImage,
+) -> Result<(Vec<OcrLine>, Vec<BBox>), String> {
+    let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())
+        .map_err(|e| format!("failed to prepare image source: {e}"))?;
+    let input = engine
+        .prepare_input(source)
+        .map_err(|e| format!("failed to prepare ocr input: {e}"))?;
+    let words = engine
+        .detect_words(&input)
+        .map_err(|e| format!("ocr word detection failed: {e}"))?;
+    let word_boxes: Vec<BBox> = words
+        .iter()
+        .map(|w| geometry::bbox_from_points(w.corners().map(|c| (c.x, c.y))))
+        .collect();
+    let line_groups = engine.find_text_lines(&input, &words);
+    let recognized = engine
+        .recognize_text(&input, &line_groups)
+        .map_err(|e| format!("ocr text extraction failed: {e}"))?;
+    let lines = recognized
+        .into_iter()
+        .flatten()
+        .map(|line| {
+            let r = line.bounding_rect();
+            let bbox = BBox::from_tlbr(
+                r.top() as f32,
+                r.left() as f32,
+                r.bottom() as f32,
+                r.right() as f32,
+            );
+            let text = line.to_string();
+            let confidence = geometry::text_sanity(&text);
+            OcrLine {
+                text,
+                bbox,
+                confidence,
+            }
+        })
+        .collect();
+    Ok((lines, word_boxes))
 }
 
 /// Run one detection+recognition pass over an in-memory image.
