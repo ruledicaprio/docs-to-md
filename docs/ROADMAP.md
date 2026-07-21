@@ -87,10 +87,11 @@ flowchart LR
   shipped. The real number, measured over a 100-seed `clean`-profile corpus after fixing a genuine
   MRZ glyph-rendering bug (misaligned character cells + thresholded anti-aliasing, PR #28, which
   took the rate from 50% to 60% on a smaller sample): **55%**, well under the
-  originally-aspirational 95%. Root cause of the remaining gap: misses cluster on the 14-character
-  `personal_number` field rather than any one systematic defect, consistent with per-character OCR
-  noise compounding over a longer field rather than a single fixable rendering bug — closing this
-  further is tracked as follow-up work, not blocking M4. The CI gate is set to 30% (a deliberate
+  originally-aspirational 95%. ~~Root cause of the remaining gap: misses cluster on the
+  14-character `personal_number` field rather than any one systematic defect.~~ **That inference
+  has since been measured and refuted** — see the per-field CER note below; `personal_number`
+  runs a 25% CER, mid-pack. It was a reasonable reading of a binary signal, and it is simply not
+  what the data says once the signal stops being binary. The CI gate is set to 30% (a deliberate
   margin below the measured 55%, absorbing cross-platform floating-point variance in OCR inference
   between machines) so it catches real regressions without being flaky.
 - **M5's `ExtractionV2` schema is landed** (`crates/synthpass-core/src/v2.rs`), and a
@@ -170,6 +171,31 @@ flowchart LR
   Note what this does **not** close, and what M6's orientation note below therefore still owes:
   the estimator remains a brute-force search over right angles, and the tie-break costs a second
   geometry pass on any page whose band is not already confident.
+- **Per-field CER measurement, and the uncomfortable thing it found.** `synthpass-bench` now
+  reports a per-field character error rate alongside the binary hit, because a hit rate says
+  *that* a document failed and never *where*. `hit` itself is unchanged, so the CI gate keeps its
+  meaning; the 50-seed clean profile re-measures at 54%, consistent with the 55% baseline.
+
+  Of the **27 of 50** documents that pass the Tier-1 gate, **1** has both names read correctly
+  and **4** have the issuing country right. This is structural, not statistical: ICAO 9303 TD3
+  check digits cover **line 2 only** — document number, dates, personal number, composite. **Line
+  1 has no check digit**, so document type, issuing country, surname and given names are
+  unverified by the very oracle Tier 1 rests on. A document can be checksum-proven and still
+  return the wrong name.
+
+  The mechanism is one recurring misread: OCR collapses interior runs of the `<` filler while the
+  trailing run absorbs the loss, so line 1 stays 44 characters and looks structurally valid while
+  every field boundary after the first shifts left. `P<JPNSTRAND<<ALEKSANDER<<<…` reads as
+  `PJPNSTRANDALEKSANDER<<<<…` — 7.9% character error producing `issuing_country` `"PNS"`,
+  `surname` `"TRANDALEKSANDER"`, empty `given_names`. Line 2 is character-perfect on 24 of 42
+  parsed documents; line 1 is wrong in its first five characters on 38 of 42.
+
+  Two consequences for what comes next, both of which outrank the M6 expansion work on the
+  [product-positioning grounds](VISION.md) that Tier 1 *is* the product: **(1)** filler-run
+  fidelity is the single highest-value OCR fix available, worth more than any per-character
+  confusion table, and **(2)** an unverified-field problem needs a *validation* answer, not only
+  a recognition one — line-1 fields should carry lower confidence and be reconcilable against the
+  visual zone, since no checksum will ever do it for them.
 - **A nightly bench-data-collection workflow has also shipped** (PR #38,
   `.github/workflows/bench-data-collection.yml`): runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on a

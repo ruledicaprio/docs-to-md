@@ -21,9 +21,10 @@
 //! ```
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use synthpass_bench::check_document;
+use synthpass_bench::{check_document, MissReason};
 use synthpass_gen::degrade::{apply_profile, CaptureProfile};
 use synthpass_gen::{generate_from_seed, GeneratorConfig};
 use synthpass_ocr::NativeOcr;
@@ -178,7 +179,40 @@ struct SeedResult {
     hit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Coarse miss class, separate from `reason`'s human-readable text so
+    /// misses can be counted by kind without parsing prose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    miss_kind: Option<&'static str>,
     elapsed_ms: u128,
+    /// Per-field character error rates, keyed by field name. Reported for
+    /// every document that produced a parseable MRZ *and* for those that did
+    /// not (as a total loss), so a mean over this is not biased by dropping
+    /// the worst documents.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fields: Vec<FieldReport>,
+}
+
+#[derive(Serialize)]
+struct FieldReport {
+    field: &'static str,
+    cer: f64,
+    /// Only carried on an imperfect read — a report full of identical
+    /// expected/got pairs is noise, and these are synthetic values so there
+    /// is no PII concern in recording the ones that differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    got: Option<String>,
+}
+
+/// Stable, machine-readable name for a miss class.
+fn miss_kind(reason: &MissReason) -> &'static str {
+    match reason {
+        MissReason::OcrError(_) => "ocr_error",
+        MissReason::NoMrzFound(_) => "no_mrz_found",
+        MissReason::ChecksumFailed => "checksum_failed",
+        MissReason::DocumentNumberMismatch { .. } => "document_number_mismatch",
+    }
 }
 
 #[derive(Serialize)]
@@ -242,8 +276,22 @@ fn main() {
                 seed,
                 profile: resolved.as_str(),
                 hit: result.hit,
-                reason: result.reason,
+                miss_kind: result.reason.as_ref().map(miss_kind),
+                reason: result.reason.map(|r| r.to_string()),
                 elapsed_ms: result.elapsed.as_millis(),
+                fields: result
+                    .fields
+                    .into_iter()
+                    .map(|f| {
+                        let imperfect = f.cer > 0.0;
+                        FieldReport {
+                            field: f.field,
+                            cer: f.cer,
+                            expected: imperfect.then_some(f.expected),
+                            got: if imperfect { f.got } else { None },
+                        }
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -270,6 +318,41 @@ fn main() {
         hit_rate * 100.0,
         parsed.profile.as_str()
     );
+
+    // Miss classes. A hit rate alone cannot distinguish "OCR found no MRZ"
+    // from "OCR read the MRZ and one character was wrong" — those are
+    // different problems with different fixes.
+    let mut kinds: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for r in results.iter().filter_map(|r| r.miss_kind) {
+        *kinds.entry(r).or_default() += 1;
+    }
+    if !kinds.is_empty() {
+        println!("\nmisses by kind:");
+        for (kind, n) in &kinds {
+            println!("  {n:>4}  {kind}");
+        }
+    }
+
+    // Mean CER per field, over every document — including those that never
+    // produced an MRZ, which count as a total loss. This is the number that
+    // says *where* the accuracy goes, rather than only how much of it.
+    let mut totals: BTreeMap<&'static str, (f64, usize)> = BTreeMap::new();
+    for f in results.iter().flat_map(|r| &r.fields) {
+        let entry = totals.entry(f.field).or_insert((0.0, 0));
+        entry.0 += f.cer;
+        entry.1 += 1;
+    }
+    if !totals.is_empty() {
+        let mut rows: Vec<(&str, f64)> = totals
+            .iter()
+            .map(|(field, (sum, n))| (*field, sum / *n as f64))
+            .collect();
+        rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        println!("\nmean character error rate by field (worst first):");
+        for (field, mean) in &rows {
+            println!("  {:>7.2}%  {field}", mean * 100.0);
+        }
+    }
 
     let report = Report {
         timestamp_unix: SystemTime::now()

@@ -14,18 +14,81 @@ use std::time::{Duration, Instant};
 use synthpass_gen::Labels;
 use synthpass_ocr::NativeOcr;
 
+/// Why a document missed. An enum rather than the free-text string this
+/// used to be, so misses **aggregate** — "37 of 50 missed" is not actionable
+/// until you know whether they are 37 checksum failures or 37 documents
+/// where OCR found no MRZ at all, and prose has to be read one line at a
+/// time to find out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MissReason {
+    /// The OCR stage itself failed (bad image, engine error).
+    OcrError(String),
+    /// OCR produced text, but nothing MRZ-shaped could be parsed out of it.
+    NoMrzFound(String),
+    /// An MRZ parsed, but its ICAO 9303 check digits did not validate.
+    ChecksumFailed,
+    /// A checksum-valid MRZ that disagrees with the ground truth. Rare and
+    /// interesting: the check digits can validate over a misread that
+    /// happens to stay self-consistent.
+    DocumentNumberMismatch { got: String, expected: String },
+}
+
+impl std::fmt::Display for MissReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OcrError(e) => write!(f, "OCR error: {e}"),
+            Self::NoMrzFound(e) => write!(f, "no MRZ found: {e}"),
+            Self::ChecksumFailed => write!(f, "checksum invalid"),
+            Self::DocumentNumberMismatch { got, expected } => {
+                write!(
+                    f,
+                    "document number mismatch: got {got:?}, expected {expected:?}"
+                )
+            }
+        }
+    }
+}
+
+/// Per-field read quality for one document.
+///
+/// The point of this type: a binary hit tells you *that* a document failed,
+/// never *where*. A 55% hit rate is consistent with one systematically
+/// broken field and with uniform per-character noise, and those call for
+/// completely different fixes. CER localises it.
+#[derive(Debug, Clone)]
+pub struct FieldOutcome {
+    /// Field name, matching `mrz::MrzData`'s own field names.
+    pub field: &'static str,
+    /// Ground truth, from the generator's labels.
+    pub expected: String,
+    /// What OCR + parse actually read. `None` when no MRZ parsed at all.
+    pub got: Option<String>,
+    /// Character error rate: Levenshtein distance / `expected.len()`, so
+    /// `0.0` is a perfect read and `1.0` is a total loss. Not clamped above
+    /// `1.0` — an insertion-heavy misread genuinely can exceed it, and
+    /// hiding that would flatter the number.
+    pub cer: f64,
+}
+
 /// Outcome of running one generated document through OCR + checksum
 /// validation.
 #[derive(Debug, Clone)]
 pub struct HitResult {
     /// `true` iff OCR recovered a checksum-valid MRZ whose document number
-    /// matches the generator's ground truth.
+    /// matches the generator's ground truth. **Deliberately unchanged** by
+    /// the addition of per-field reporting below — the M4 CI gate is defined
+    /// on this number, so it has to keep meaning exactly what it meant when
+    /// the 55% baseline and the 30% floor were measured.
     pub hit: bool,
-    /// Human-readable reason for a miss (OCR error, no MRZ found, checksum
-    /// failed, document number mismatch). `None` on a hit.
-    pub reason: Option<String>,
+    /// Why it missed. `None` on a hit.
+    pub reason: Option<MissReason>,
     /// Wall-clock time spent in this check (OCR + parse), for reporting.
     pub elapsed: Duration,
+    /// Per-field read quality — populated whenever an MRZ parsed at all,
+    /// **including when its checksum failed**, since a checksum-invalid
+    /// parse is exactly the case where knowing which field broke is most
+    /// useful. Empty only when there was nothing to compare.
+    pub fields: Vec<FieldOutcome>,
 }
 
 /// Runs `image` through `ocr` and checks the result against `expected`'s
@@ -42,40 +105,196 @@ pub fn check_document(ocr: &NativeOcr, image: &DynamicImage, expected: &Labels) 
         fastrand_seed()
     ));
     let write_result = image.save(&path);
-    let result = run_check(&path, write_result, ocr, expected);
+    let (reason, fields) = run_check(&path, write_result, ocr, expected);
     let _ = std::fs::remove_file(&path);
 
     HitResult {
-        hit: result.is_ok(),
-        reason: result.err(),
+        hit: reason.is_none(),
+        reason,
         elapsed: start.elapsed(),
+        fields,
     }
 }
 
+/// Returns the miss reason (`None` on a hit) and the per-field breakdown.
+///
+/// Structured so the breakdown survives a miss: the old version returned
+/// early on a checksum failure, which threw away the read it had just
+/// obtained — precisely the read that says *which field* broke the checksum.
 fn run_check(
     path: &std::path::Path,
     write_result: image::ImageResult<()>,
     ocr: &NativeOcr,
     expected: &Labels,
-) -> Result<(), String> {
-    write_result.map_err(|e| format!("failed to write temp image: {e}"))?;
+) -> (Option<MissReason>, Vec<FieldOutcome>) {
+    if let Err(e) = write_result {
+        return (
+            Some(MissReason::OcrError(format!(
+                "failed to write temp image: {e}"
+            ))),
+            Vec::new(),
+        );
+    }
 
-    let text = ocr.recognize(path)?;
+    let text = match ocr.recognize(path) {
+        Ok(text) => text,
+        Err(e) => return (Some(MissReason::OcrError(e)), Vec::new()),
+    };
 
-    let decoded = mrz::find_and_parse(&text).map_err(|e| format!("no MRZ found: {e:?}"))?;
+    // Ground truth is the generator's own MRZ lines parsed back through the
+    // same parser the read goes through. Comparing `MrzData` to `MrzData`
+    // keeps both sides in identical formats — dates already century-expanded
+    // to ISO, names already split — so the CER measures the *read*, not a
+    // formatting difference between the visual zone and the machine-readable
+    // one. The labels are correct by construction (M2's DoD), so this parse
+    // cannot legitimately fail.
+    let truth = match mrz::parse_td3(&expected.mrz_line1, &expected.mrz_line2) {
+        Ok(truth) => truth,
+        Err(e) => {
+            return (
+                Some(MissReason::OcrError(format!(
+                    "ground-truth MRZ failed to parse — this is a generator bug, not a read \
+                     failure: {e:?}"
+                ))),
+                Vec::new(),
+            )
+        }
+    };
+
+    let decoded = match mrz::find_and_parse(&text) {
+        Ok(decoded) => decoded,
+        Err(e) => {
+            return (
+                Some(MissReason::NoMrzFound(format!("{e:?}"))),
+                total_loss(&truth),
+            )
+        }
+    };
+
+    let fields = compare_fields(&truth, &decoded);
 
     if !decoded.valid() {
-        return Err(format!("checksum invalid: {:?}", decoded.checks));
+        return (Some(MissReason::ChecksumFailed), fields);
     }
-
-    if decoded.document_number != expected.document_number.value {
-        return Err(format!(
-            "document number mismatch: got {:?}, expected {:?}",
-            decoded.document_number, expected.document_number.value
-        ));
+    if decoded.document_number != truth.document_number {
+        return (
+            Some(MissReason::DocumentNumberMismatch {
+                got: decoded.document_number.clone(),
+                expected: truth.document_number.clone(),
+            }),
+            fields,
+        );
     }
+    (None, fields)
+}
 
-    Ok(())
+/// The fields compared per document, as `(name, accessor)` pairs. One list so
+/// `compare_fields` and `total_loss` cannot drift apart.
+type FieldAccessor = fn(&mrz::MrzData) -> String;
+
+const COMPARED_FIELDS: [(&str, FieldAccessor); 10] = [
+    ("document_type", |m| m.document_type.clone()),
+    ("issuing_country", |m| m.issuing_country.clone()),
+    ("document_number", |m| m.document_number.clone()),
+    ("surname", |m| m.surname.clone()),
+    ("given_names", |m| m.given_names.clone()),
+    ("nationality", |m| m.nationality.clone()),
+    ("date_of_birth", |m| m.date_of_birth.clone()),
+    ("sex", |m| m.sex.clone()),
+    ("date_of_expiry", |m| m.date_of_expiry.clone()),
+    ("personal_number", |m| {
+        m.personal_number.clone().unwrap_or_default()
+    }),
+];
+
+fn compare_fields(truth: &mrz::MrzData, got: &mrz::MrzData) -> Vec<FieldOutcome> {
+    let mut out: Vec<FieldOutcome> = COMPARED_FIELDS
+        .iter()
+        .map(|(field, get)| {
+            let expected = get(truth);
+            let actual = get(got);
+            FieldOutcome {
+                field,
+                cer: cer(&expected, &actual),
+                expected,
+                got: Some(actual),
+            }
+        })
+        .collect();
+
+    // The raw MRZ characters themselves — the most diagnostic single number
+    // here, since every parsed field above is a substring of these 88
+    // characters and a per-field rate cannot distinguish "read one field
+    // badly" from "read the whole zone slightly badly".
+    out.push(FieldOutcome {
+        field: "mrz_lines",
+        cer: cer(&truth.mrz_lines, &got.mrz_lines),
+        expected: truth.mrz_lines.clone(),
+        got: Some(got.mrz_lines.clone()),
+    });
+    out
+}
+
+/// The breakdown for a document whose MRZ was never found: every field is a
+/// total loss. Recorded explicitly rather than as an empty vector so these
+/// documents still count in a mean CER instead of silently improving it.
+fn total_loss(truth: &mrz::MrzData) -> Vec<FieldOutcome> {
+    COMPARED_FIELDS
+        .iter()
+        .map(|(field, get)| FieldOutcome {
+            field,
+            expected: get(truth),
+            got: None,
+            cer: 1.0,
+        })
+        .chain(std::iter::once(FieldOutcome {
+            field: "mrz_lines",
+            expected: truth.mrz_lines.clone(),
+            got: None,
+            cer: 1.0,
+        }))
+        .collect()
+}
+
+/// Character error rate: Levenshtein distance from `expected` to `got`,
+/// divided by `expected`'s length.
+///
+/// Two empty strings score `0.0` (a correctly-read absent optional field is
+/// a perfect read, not a failure); a non-empty read against an empty
+/// expectation scores `1.0`, since there is no length to divide by but the
+/// read is certainly wrong.
+pub fn cer(expected: &str, got: &str) -> f64 {
+    let expected: Vec<char> = expected.chars().collect();
+    let got: Vec<char> = got.chars().collect();
+    if expected.is_empty() {
+        return if got.is_empty() { 0.0 } else { 1.0 };
+    }
+    levenshtein(&expected, &got) as f64 / expected.len() as f64
+}
+
+/// Levenshtein edit distance over two char slices.
+///
+/// Two rolling rows rather than a full `m*n` matrix — the distance is all
+/// that is wanted, never the alignment. Deliberately hand-written: adding
+/// the `strsim` crate for one textbook function would spend a dependency
+/// (see `docs/VISION.md` §1 on new dependencies) on ~20 lines of `std`.
+fn levenshtein(a: &[char], b: &[char]) -> usize {
+    if a.is_empty() {
+        return b.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let substitution = prev[j] + usize::from(ca != cb);
+            let deletion = prev[j + 1] + 1;
+            let insertion = cur[j] + 1;
+            cur[j + 1] = substitution.min(deletion).min(insertion);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 /// A cheap, non-cryptographic per-call disambiguator for temp file names —
@@ -91,6 +310,83 @@ fn fastrand_seed() -> u64 {
 mod tests {
     use super::*;
     use synthpass_gen::{generate_from_seed, GeneratorConfig};
+
+    /// Hand-computed edit distances. These are the textbook cases; if this
+    /// ever fails, the rolling-row indexing is wrong, and every CER number
+    /// in every benchmark report is wrong with it.
+    #[test]
+    fn levenshtein_matches_hand_computed_distances() {
+        let d = |a: &str, b: &str| {
+            let a: Vec<char> = a.chars().collect();
+            let b: Vec<char> = b.chars().collect();
+            levenshtein(&a, &b)
+        };
+        assert_eq!(d("", ""), 0);
+        assert_eq!(d("", "abc"), 3, "pure insertion");
+        assert_eq!(d("abc", ""), 3, "pure deletion");
+        assert_eq!(d("abc", "abc"), 0);
+        assert_eq!(d("kitten", "sitting"), 3, "the canonical example");
+        assert_eq!(d("flaw", "lawn"), 2);
+        // The confusions this instrument exists to count: one substitution.
+        assert_eq!(d("L898902C3", "L898902C8"), 1);
+        // Six of the ten characters are zeros read as the letter O.
+        assert_eq!(d("0070070071", "OO7OO7OO71"), 6, "O/0 across the field");
+    }
+
+    #[test]
+    fn cer_normalizes_by_expected_length() {
+        assert_eq!(cer("ABCDE", "ABCDE"), 0.0, "perfect read");
+        assert_eq!(cer("ABCDE", "ABCDX"), 0.2, "one of five wrong");
+        assert_eq!(cer("AB", ""), 1.0, "nothing read is a total loss");
+        assert_eq!(cer("", ""), 0.0, "correctly-read absent field is perfect");
+        assert_eq!(cer("", "X"), 1.0, "read something where nothing was");
+        assert!(
+            cer("AB", "XXXXXX") > 1.0,
+            "an insertion-heavy misread is allowed to exceed 1.0 rather than \
+             being clamped into looking better than it is"
+        );
+    }
+
+    /// A checksum failure must still produce a breakdown — that is the whole
+    /// point of restructuring `run_check` around it. Uses the generator's own
+    /// ground truth, corrupted in one field, so no OCR run is needed.
+    #[test]
+    fn a_checksum_invalid_read_still_reports_per_field_detail() {
+        let config = GeneratorConfig::new(7);
+        let (_image, labels, _passport) = generate_from_seed(&config);
+        let truth = mrz::parse_td3(&labels.mrz_line1, &labels.mrz_line2).expect("labels parse");
+
+        let mut misread = truth.clone();
+        misread.surname = format!("{}X", truth.surname);
+
+        let fields = compare_fields(&truth, &misread);
+        assert_eq!(
+            fields.len(),
+            COMPARED_FIELDS.len() + 1,
+            "every field plus the raw MRZ lines"
+        );
+
+        let surname = fields.iter().find(|f| f.field == "surname").unwrap();
+        assert!(surname.cer > 0.0, "the corrupted field must show error");
+        for f in fields.iter().filter(|f| f.field != "surname") {
+            assert_eq!(f.cer, 0.0, "{} should be a clean read", f.field);
+        }
+    }
+
+    /// A document whose MRZ never parsed must count as a total loss in every
+    /// field rather than vanishing from the aggregate — otherwise the worst
+    /// documents would silently improve the mean CER.
+    #[test]
+    fn an_unparsed_document_is_a_total_loss_not_an_absence() {
+        let config = GeneratorConfig::new(11);
+        let (_image, labels, _passport) = generate_from_seed(&config);
+        let truth = mrz::parse_td3(&labels.mrz_line1, &labels.mrz_line2).expect("labels parse");
+
+        let fields = total_loss(&truth);
+        assert_eq!(fields.len(), COMPARED_FIELDS.len() + 1);
+        assert!(fields.iter().all(|f| f.cer == 1.0));
+        assert!(fields.iter().all(|f| f.got.is_none()));
+    }
 
     /// Needs the real `.rten` OCR models at the repo root — same requirement
     /// as `crates/synthpass-ocr/tests/native_ocr_e2e.rs`, run with
