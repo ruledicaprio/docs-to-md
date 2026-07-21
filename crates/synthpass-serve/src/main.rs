@@ -30,8 +30,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use synthpass_license::FEATURE_MULTI_CONTEXT as MULTI_CONTEXT;
-use synthpass_pipeline::{env_llm_contexts, Pipeline, ProcessEvent};
+use synthpass_license::{FEATURE_METRICS, FEATURE_MULTI_CONTEXT as MULTI_CONTEXT};
+use synthpass_pipeline::{env_llm_contexts, MetricsSnapshot, Pipeline, ProcessEvent};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -169,6 +169,109 @@ fn resolve_llm_contexts(
     }
 }
 
+/// Install the process-wide tracing subscriber.
+///
+/// `SYNTHPASS_LOG` sets the filter (default `info`), `SYNTHPASS_LOG_FORMAT=json`
+/// switches to line-delimited JSON for log pipelines. Deliberately *not*
+/// `RUST_LOG`: this binary's log level is operator configuration, and it
+/// shouldn't change because some unrelated tool exported `RUST_LOG` into the
+/// environment.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let filter =
+        EnvFilter::try_from_env("SYNTHPASS_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let json = env::var("SYNTHPASS_LOG_FORMAT").as_deref() == Ok("json");
+
+    // `try_init` rather than `init`: a double install should not abort a
+    // server that is otherwise ready to serve.
+    let builder = fmt::Subscriber::builder().with_env_filter(filter);
+    let result = if json {
+        builder.json().try_init()
+    } else {
+        builder.try_init()
+    };
+    if let Err(e) = result {
+        eprintln!("[synthpass-serve] could not install tracing subscriber: {e}");
+    }
+}
+
+/// Render a [`MetricsSnapshot`] as Prometheus text-exposition format.
+///
+/// Hand-rolled on purpose: the format is a few dozen lines of `write!`, and a
+/// metrics crate would add a registry, an exporter and a dependency to a
+/// process that has exactly one of each. Kept a pure function of the snapshot
+/// so the output is unit-testable without standing up a server.
+///
+/// **PII rule.** Every label here is a compile-time constant. Nothing derived
+/// from a document — no filename, no field value — may ever become a label,
+/// because unbounded label cardinality is both a Prometheus foot-gun and, for
+/// this product, a data leak.
+fn metrics_text(snap: &MetricsSnapshot) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(1024);
+
+    out.push_str(
+        "# HELP synthpass_documents_total Documents that reached a terminal extraction, by tier.\n",
+    );
+    out.push_str("# TYPE synthpass_documents_total counter\n");
+    let _ = writeln!(
+        out,
+        "synthpass_documents_total{{method=\"mrz-deterministic\"}} {}",
+        snap.documents_tier1
+    );
+    let _ = writeln!(
+        out,
+        "synthpass_documents_total{{method=\"llm\"}} {}",
+        snap.documents_tier2
+    );
+
+    out.push_str("# HELP synthpass_stage_failures_total Stage failures, by stage.\n");
+    out.push_str("# TYPE synthpass_stage_failures_total counter\n");
+    let _ = writeln!(
+        out,
+        "synthpass_stage_failures_total{{stage=\"ocr\"}} {}",
+        snap.ocr_failures
+    );
+    let _ = writeln!(
+        out,
+        "synthpass_stage_failures_total{{stage=\"tier2\"}} {}",
+        snap.tier2_failures
+    );
+
+    out.push_str(
+        "# HELP synthpass_llm_queue_depth Tier-2 requests queued or in flight right now.\n",
+    );
+    out.push_str("# TYPE synthpass_llm_queue_depth gauge\n");
+    let _ = writeln!(out, "synthpass_llm_queue_depth {}", snap.queue_depth);
+
+    for (name, help, hist) in [
+        (
+            "synthpass_ocr_duration_seconds",
+            "OCR stage duration.",
+            &snap.ocr_seconds,
+        ),
+        (
+            "synthpass_tier2_duration_seconds",
+            "Tier-2 inference duration.",
+            &snap.tier2_seconds,
+        ),
+    ] {
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} histogram");
+        for (bound, count) in hist.buckets {
+            let _ = writeln!(out, "{name}_bucket{{le=\"{bound}\"}} {count}");
+        }
+        // `+Inf` always equals the total count — that identity is what makes
+        // the series well-formed to a scraper.
+        let _ = writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {}", hist.count);
+        let _ = writeln!(out, "{name}_sum {}", hist.sum_seconds);
+        let _ = writeln!(out, "{name}_count {}", hist.count);
+    }
+
+    out
+}
+
 /// Whether `addr` (a `host:port`, `[ipv6]:port`, or bare host) names a loopback
 /// interface. Compares the parsed host exactly rather than a string prefix, so
 /// `"127.0.0.1.evil.example:8080"` isn't mistaken for `127.0.0.1`.
@@ -240,6 +343,7 @@ async fn require_auth(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let work_dir = PathBuf::from(env::var("WORK_DIR").unwrap_or_else(|_| "work".into()));
     let keep_work = env::var("KEEP_WORK").is_ok();
@@ -274,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // being walked back later.
     let (llm_contexts, contexts_note) = resolve_llm_contexts(license.as_ref(), env_llm_contexts());
     if let Some(note) = contexts_note {
-        println!("⚠️  [synthpass-serve] {note}");
+        tracing::warn!("{note}");
     }
     if license
         .as_ref()
@@ -282,9 +386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Break B6: say it once at boot rather than waving every request
         // through in silence.
-        println!(
-            "ℹ️  [synthpass-serve] license names no features — grandfathered into all of them"
-        );
+        tracing::info!("license names no features — grandfathered into all of them");
     }
 
     let pipeline = Pipeline::from_env_with_llm_contexts(llm_contexts);
@@ -301,10 +403,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         None => "skipped".to_string(),
     };
-    println!(
-        "🚀 [synthpass-serve] Listening on {scheme}://{bind_addr} (ocr: {}, auth: {}, license: {license_desc})",
-        pipeline.ocr_engine(),
-        if token.is_some() { "bearer" } else { "none" }
+    tracing::info!(
+        %bind_addr,
+        scheme,
+        ocr = %pipeline.ocr_engine(),
+        auth = if token.is_some() { "bearer" } else { "none" },
+        license = %license_desc,
+        "synthpass-serve listening"
     );
 
     let state = Arc::new(AppState {
@@ -319,6 +424,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/extract", post(extract))
+        .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         // Merged in after the auth layer so /health stays reachable without
@@ -381,6 +487,24 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
+/// Prometheus scrape endpoint.
+///
+/// Sits *inside* the auth layer (unlike `/health`): operational counters are
+/// not public. Additionally gated on the `metrics` license feature — the
+/// "enhanced reporting" surface of [`BRANDING.md`] §5, which is a legitimate
+/// paid boundary because it is an integration convenience, not core
+/// capability. Refusals are `403` and name the missing feature.
+///
+/// [`BRANDING.md`]: https://github.com/ruledicaprio/SynthPass/blob/main/docs/BRANDING.md
+async fn metrics(State(state): State<Arc<AppState>>) -> Result<String, ApiError> {
+    if let Some(payload) = &state.license {
+        if let Err(e) = synthpass_license::check_feature(payload, FEATURE_METRICS) {
+            return Err(api_error(StatusCode::FORBIDDEN, e));
+        }
+    }
+    Ok(metrics_text(&state.pipeline.metrics_snapshot()))
+}
+
 async fn extract(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -437,9 +561,21 @@ async fn extract(
         .filter(|e: &String| !e.is_empty())
         .unwrap_or_else(|| "bin".into());
 
-    let upload_path = state
-        .work_dir
-        .join(format!("{}.{ext}", uuid::Uuid::new_v4()));
+    // One id per upload, threaded through every span this request produces so
+    // a failure is greppable end to end. The uploaded *filename* is
+    // deliberately never logged — it is user-supplied and routinely contains
+    // the holder's name.
+    let request_id = uuid::Uuid::new_v4();
+    let span = tracing::info_span!("extract", %request_id);
+    let _entered = span.enter();
+    tracing::info!(
+        upload_bytes = data.len(),
+        ext = %ext,
+        legacy_v1,
+        "extraction request accepted"
+    );
+
+    let upload_path = state.work_dir.join(format!("{request_id}.{ext}"));
     tokio::fs::write(&upload_path, &data)
         .await
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -684,6 +820,124 @@ mod tests {
         // Break B6: `features: []` predates gating and unlocks everything.
         let payload = sample_license_payload(4_000_000_000); // features: vec![]
         assert_eq!(resolve_llm_contexts(Some(&payload), 4), (4, None));
+    }
+
+    fn metrics_app(license: Option<synthpass_license::LicensePayload>) -> Router {
+        let pipeline = Pipeline::new(
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
+        );
+        let state = Arc::new(AppState {
+            pipeline,
+            work_dir: PathBuf::from("work"),
+            keep_work: false,
+            token: None,
+            max_queue_depth: 4,
+            license,
+        });
+        Router::new()
+            .route("/metrics", get(metrics))
+            .with_state(state)
+    }
+
+    async fn metrics_response(app: Router) -> (StatusCode, String) {
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn metrics_renders_prometheus_text_for_a_licensed_scrape() {
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Enterprise.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let (status, body) = metrics_response(metrics_app(Some(payload))).await;
+
+        assert_eq!(status, StatusCode::OK);
+        for expected in [
+            "# TYPE synthpass_documents_total counter",
+            "synthpass_documents_total{method=\"mrz-deterministic\"} 0",
+            "synthpass_documents_total{method=\"llm\"} 0",
+            "# TYPE synthpass_llm_queue_depth gauge",
+            "# TYPE synthpass_ocr_duration_seconds histogram",
+            "synthpass_ocr_duration_seconds_bucket{le=\"+Inf\"} 0",
+            "synthpass_tier2_duration_seconds_count 0",
+        ] {
+            assert!(body.contains(expected), "missing {expected:?} in:\n{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_is_403_without_the_metrics_feature() {
+        // Pro licenses buy capacity, not reporting — see BRANDING.md §5.
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Pro.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let (status, body) = metrics_response(metrics_app(Some(payload))).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body.contains(FEATURE_METRICS),
+            "the refusal must name the missing feature: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_is_available_when_licensing_is_skipped() {
+        // SYNTHPASS_LICENSE_SKIP=1 is a full opt-out, not a bottom tier.
+        let (status, _) = metrics_response(metrics_app(None)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[test]
+    fn metrics_text_histogram_buckets_are_monotonic_and_end_at_inf() {
+        let pipeline = Pipeline::new(
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
+        );
+        let body = metrics_text(&pipeline.metrics_snapshot());
+
+        // Every `_bucket` line must parse, and `+Inf` must be the last one for
+        // each histogram — the shape a scraper relies on.
+        let inf_lines: Vec<&str> = body
+            .lines()
+            .filter(|l| l.contains("_bucket{le=\"+Inf\"}"))
+            .collect();
+        assert_eq!(inf_lines.len(), 2, "one +Inf per histogram: {inf_lines:?}");
+        assert!(
+            body.lines().filter(|l| l.contains("_bucket{")).count() > 2,
+            "bounded buckets should be rendered alongside +Inf"
+        );
+    }
+
+    #[test]
+    fn metrics_text_never_contains_a_dynamic_label() {
+        let pipeline = Pipeline::new(
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
+        );
+        let body = metrics_text(&pipeline.metrics_snapshot());
+
+        // The label space must stay closed: only `method`, `stage` and `le`.
+        // Anything derived from a document would be both a cardinality
+        // explosion and a PII leak on a scrape endpoint.
+        for line in body.lines().filter(|l| l.contains('{')) {
+            let labels = &line[line.find('{').unwrap() + 1..line.rfind('}').unwrap()];
+            let key = labels.split('=').next().unwrap();
+            assert!(
+                matches!(key, "method" | "stage" | "le"),
+                "unexpected label {key:?} in metrics line: {line}"
+            );
+        }
     }
 
     #[test]

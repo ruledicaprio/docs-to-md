@@ -19,10 +19,12 @@
 pub use mrz;
 
 mod infer;
+pub mod metrics;
 mod ocr;
 pub use infer::InferBackend;
 #[cfg(feature = "inferer-native")]
 pub use infer::NativeInferer;
+pub use metrics::{MetricsSnapshot, PipelineMetrics};
 pub use ocr::OcrEngine;
 #[cfg(feature = "ocr-native-rust")]
 pub use ocr::RustOcrEngine;
@@ -32,6 +34,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use synthpass_core::v2::{CheckDigits, ExtractionV2, MrzBlock, MrzFormat, Provenance};
 use synthpass_core::Extraction;
 use tokio::sync::{mpsc, Semaphore};
@@ -63,6 +66,10 @@ pub struct Pipeline {
     /// of accepting it unboundedly and blocking. Incremented just before
     /// queuing for `llm_semaphore`, decremented when the call completes.
     llm_queue_depth: Arc<AtomicUsize>,
+    /// Counters and latency histograms for `/metrics` (Atlas §5–§6). Counts
+    /// and durations only — never field content; see [`metrics`] on the PII
+    /// rule.
+    metrics: Arc<PipelineMetrics>,
 }
 
 /// Bumps `llm_queue_depth` for the lifetime of the guard — from just before
@@ -219,7 +226,15 @@ impl Pipeline {
             encrypt_key: None,
             llm_semaphore: Arc::new(Semaphore::new(contexts.max(1))),
             llm_queue_depth: Arc::new(AtomicUsize::new(0)),
+            metrics: Arc::new(PipelineMetrics::default()),
         }
+    }
+
+    /// Point-in-time counters and histograms for the `/metrics` endpoint.
+    /// Queue depth is read here rather than stored, since it's a gauge the
+    /// semaphore already owns.
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        self.metrics.snapshot(self.llm_queue_depth() as u64)
     }
 
     /// Append a PII-free audit record (SHA-256 fingerprint + metadata) per
@@ -262,7 +277,7 @@ impl Pipeline {
             Ok(s) => match synthpass_core::crypt::key_from_base64(&s) {
                 Ok(key) => Some(key),
                 Err(e) => {
-                    eprintln!("[synthpass] ignoring SYNTHPASS_KEY: {e}");
+                    tracing::warn!(error = %e, "ignoring SYNTHPASS_KEY");
                     None
                 }
             },
@@ -315,7 +330,28 @@ impl Pipeline {
             .acquire()
             .await
             .expect("llm_semaphore is never closed");
-        self.infer.extract(markdown).await
+
+        let started = Instant::now();
+        let result = self.infer.extract(markdown).await;
+        let elapsed = started.elapsed();
+        self.metrics.tier2_seconds.observe(elapsed);
+        match &result {
+            Ok(_) => tracing::debug!(
+                stage = "tier2",
+                elapsed_ms = elapsed.as_millis() as u64,
+                "Tier-2 extraction complete"
+            ),
+            Err(e) => {
+                self.metrics.record_tier2_failure();
+                tracing::warn!(
+                    stage = "tier2",
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    error = %e,
+                    "Tier-2 extraction failed"
+                );
+            }
+        }
+        result
     }
 
     /// Stage 1-2: OCR the input, write `<input>.md`, and check for a
@@ -337,7 +373,27 @@ impl Pipeline {
         ),
         PipelineError,
     > {
-        let markdown = self.ocr.to_markdown(input).await?;
+        // Spans carry stage identity and *shape* only — byte counts, booleans,
+        // durations. Never `markdown`, never a field value: `/metrics` and the
+        // log stream both sit outside the trust boundary that the document
+        // itself does not leave.
+        let ocr_started = Instant::now();
+        let markdown = match self.ocr.to_markdown(input).await {
+            Ok(markdown) => markdown,
+            Err(e) => {
+                self.metrics.record_ocr_failure();
+                tracing::warn!(stage = "ocr", error = %e, "OCR stage failed");
+                return Err(e);
+            }
+        };
+        let ocr_elapsed = ocr_started.elapsed();
+        self.metrics.ocr_seconds.observe(ocr_elapsed);
+        tracing::debug!(
+            stage = "ocr",
+            elapsed_ms = ocr_elapsed.as_millis() as u64,
+            markdown_bytes = markdown.len(),
+            "OCR complete"
+        );
 
         let md_path = input.with_extension("md");
         tokio::fs::write(&md_path, &markdown).await?;
@@ -351,6 +407,12 @@ impl Pipeline {
                 extraction_v2_from_mrz(m),
             )
         });
+        tracing::debug!(
+            stage = "tier1",
+            mrz_found = mrz_data.is_some(),
+            checksums_valid = tier1.is_some(),
+            "Tier-1 MRZ validation complete"
+        );
         Ok((markdown, md_path, mrz_data, tier1))
     }
 
@@ -398,6 +460,7 @@ impl Pipeline {
             }
         }
 
+        self.metrics.record_document(method);
         Ok(PipelineResult {
             markdown,
             md_path,
@@ -695,6 +758,54 @@ mod tests {
 
     fn mock_pipeline() -> Pipeline {
         Pipeline::new(Box::new(NoopOcr), Box::new(MockBackend))
+    }
+
+    /// A distinctive fake holder name planted in the OCR text so a leak into
+    /// the log stream is unambiguous rather than a judgement call.
+    const PII_SENTINEL: &str = "ZZQXPII-SENTINEL-SURNAME";
+
+    /// An OCR engine that returns document text containing [`PII_SENTINEL`].
+    struct PiiOcr;
+
+    #[async_trait::async_trait]
+    impl OcrEngine for PiiOcr {
+        async fn to_markdown(&self, _input: &Path) -> Result<String, PipelineError> {
+            Ok(format!(
+                "Surname: {PII_SENTINEL}\nP<UTO{PII_SENTINEL}<<JOHN<<<<<<<<<<<<<<<<<<<"
+            ))
+        }
+        fn describe(&self) -> String {
+            "pii-ocr".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_count_documents_by_tier_and_time_the_stages() {
+        let dir = std::env::temp_dir().join(format!("synthpass-metrics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let input = dir.join("doc.png");
+        std::fs::write(&input, b"not really a png").expect("write input");
+
+        let pipeline = Pipeline::new(Box::new(PiiOcr), Box::new(MockBackend));
+        let before = pipeline.metrics_snapshot();
+        assert_eq!(before.documents_tier1 + before.documents_tier2, 0);
+
+        pipeline
+            .process_document(&input)
+            .await
+            .expect("pipeline reaches a terminal result");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let after = pipeline.metrics_snapshot();
+        // PiiOcr's text has no valid check digits, so this is a Tier-2 document.
+        assert_eq!(after.documents_tier2, 1, "Tier-2 document counted");
+        assert_eq!(after.documents_tier1, 0);
+        assert_eq!(after.ocr_seconds.count, 1, "OCR stage timed");
+        assert_eq!(after.tier2_seconds.count, 1, "Tier-2 stage timed");
+        assert_eq!(
+            after.queue_depth, 0,
+            "the queue guard released once the call completed"
+        );
     }
 
     #[tokio::test]

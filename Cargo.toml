@@ -25,6 +25,23 @@ description = "Air-gapped, multi-level identity-document extraction: determinist
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 image = "0.25"
+# Structured observability (M5 / Atlas §6). `tracing` is a facade already
+# present in the lock via axum, hyper, tower and llama-cpp-2, so the only
+# genuinely new crate here is the subscriber. Both are pure Rust with no C
+# dependencies and no network behaviour, which is what the "new dependencies
+# must be pure Rust or justify themselves in writing" rule in docs/VISION.md
+# asks for. The justification: the "no PII in any log line" DoD needs a
+# structured, filterable trail that convention alone cannot enforce or test.
+# Deliberately NOT added: any metrics/prometheus crate — the exposition format
+# is hand-rolled in synthpass-serve (see `metrics_text`), which keeps the
+# dependency count flat for a few dozen lines of formatting.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "env-filter",
+    "json",
+    "ansi",
+] }
 
 # Release builds: fat LTO + single codegen unit for smaller, faster binaries
 # (the WASM demo payload and the CLI/serve binaries both benefit).

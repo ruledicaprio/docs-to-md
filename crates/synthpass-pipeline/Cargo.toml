@@ -9,6 +9,7 @@ synthpass-core = { path = "../synthpass-core", features = ["security"] }
 tokio = { workspace = true, features = ["fs", "sync", "rt"] }
 serde_json = "1"
 async-trait = "0.1"
+tracing = { workspace = true }
 zeroize = "1"
 # Pure-Rust ocrs/rten OCR engine — the default OCR backend.
 synthpass-ocr = { path = "../synthpass-ocr", optional = true }
@@ -29,3 +30,6 @@ ocr-embedded = ["ocr-native-rust", "synthpass-ocr/embedded-models"]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 # Re-encodes the sample JPEG to PNG/WebP for the format-coverage smoke test.
 image = { workspace = true }
+# Captures emitted spans/events so the "no PII in any log line" DoD is a test,
+# not a convention (Atlas §6).
+tracing-subscriber = { workspace = true }

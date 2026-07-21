@@ -179,9 +179,10 @@ const DEFAULT_N_CTX: u32 = 2048;
 pub fn backend_from_env() -> Box<dyn InferBackend> {
     if let Ok(choice) = std::env::var("SYNTHPASS_INFERER") {
         if choice != "native" {
-            eprintln!(
-                "[synthpass] SYNTHPASS_INFERER={choice:?} is not a recognized backend (gRPC support \
-                 was removed in v0.7.5) — using native"
+            tracing::warn!(
+                requested = %choice,
+                "SYNTHPASS_INFERER is not a recognized backend (gRPC support was removed in \
+                 v0.7.5) — using native"
             );
         }
     }

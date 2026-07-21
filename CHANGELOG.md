@@ -68,6 +68,33 @@ extraction.
   §9, break B6): a license with an *empty* `features` list is grandfathered into every feature and
   says so once at boot, and `SYNTHPASS_LICENSE_SKIP=1` remains a full opt-out — this meters the
   official binary, it is not DRM. Zero new dependencies.
+- **Structured observability: `tracing` + `GET /metrics` (M5, Atlas §5–§6).** Every
+  `println!`/`eprintln!` on the request path is now a `tracing` event, and `/api/extract` opens an
+  `extract` span carrying a `request_id` so one failing upload is greppable end to end.
+  `SYNTHPASS_LOG` sets the filter (default `info`); `SYNTHPASS_LOG_FORMAT=json` emits
+  line-delimited JSON. Deliberately not `RUST_LOG` — this binary's log level is operator
+  configuration and shouldn't shift because an unrelated tool exported `RUST_LOG`.
+  `synthpass-pipeline` gained a `metrics` module (counters by tier, stage-failure counters, a
+  queue-depth gauge, and cumulative-bucket latency histograms for the OCR and Tier-2 stages), and
+  `synthpass-serve` exposes it at `GET /metrics` in Prometheus text format — inside the auth layer
+  (unlike `/health`) and gated on the `metrics` license feature.
+
+  **One new dependency, justified in writing** per `docs/VISION.md`: `tracing-subscriber`. The
+  `tracing` facade was already in the lock transitively via axum, hyper, tower and `llama-cpp-2`,
+  so the only genuinely new crate is the subscriber; both are pure Rust with no C dependencies and
+  no network behaviour. The justification is that the "no PII in any log line" DoD needs a
+  structured, filterable trail that convention alone cannot enforce *or test*. No metrics crate was
+  added — the Prometheus exposition format is hand-rolled in `metrics_text`, keeping the dependency
+  count flat for a few dozen lines of formatting.
+
+  **The PII rule is now a test, not a promise.** `crates/synthpass-pipeline/tests/pii_logging.rs`
+  drives a document whose OCR text and extracted fields carry sentinel values and asserts none of
+  them reach the log stream at `TRACE`. It lives in its own integration-test binary on purpose:
+  `tracing` caches callsite interest globally, so the same test inside the library observed an
+  empty buffer and passed *vacuously* once sibling tests had already driven those callsites. It now
+  asserts the capture harness is non-empty first, so a broken harness fails instead of pretending.
+  Metric labels are a closed set (`method`, `stage`, `le`) with a test enforcing it — unbounded
+  label cardinality on a scrape endpoint would be both a Prometheus foot-gun and a data leak.
 - **Nightly bench-data-collection workflow.** A new scheduled CI job
   (`.github/workflows/bench-data-collection.yml`) runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on

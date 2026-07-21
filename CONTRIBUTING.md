@@ -88,6 +88,22 @@ input to `fuzz/corpus/<target>/` as a permanent regression seed, add a matching 
   density and naming consistent with the file you're editing.
 - **The `mrz` crate stays zero-dependency** (it compiles to `wasm32`); don't add runtime deps to it.
 - **No PII in logs or fixtures.** Use the public-domain specimens in `samples/`.
+
+  This is a review checklist item, not just an aspiration — check it on every PR that touches a
+  `tracing` call or the metrics surface:
+
+  - A log or span field may carry **shape**: byte counts, durations, booleans, tier names,
+    `request_id`. It may never carry **content**: OCR markdown, an extracted field value, or an
+    uploaded filename (routinely the holder's name).
+  - Metric labels are a **closed set** (`method`, `stage`, `le`). Never label a series with
+    anything derived from a document — that is a cardinality explosion and a data leak on an
+    endpoint built to be scraped.
+  - Error strings handed up from a backend are logged verbatim, so an error you *author* must
+    describe the failure without quoting document content.
+  - `crates/synthpass-pipeline/tests/pii_logging.rs` enforces the first point with sentinel
+    values. If you add a stage, add its sentinel there. Note that it asserts the capture buffer is
+    non-empty before asserting on its contents: `tracing` caches callsite interest globally, so a
+    logging test that never captures anything will otherwise pass while proving nothing.
 - **One logical change per PR**, with a clear description. Reference issues where relevant.
 
 ### Adding a corpus specimen

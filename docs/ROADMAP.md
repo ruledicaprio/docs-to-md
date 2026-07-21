@@ -110,9 +110,25 @@ flowchart LR
   no `features` list are grandfathered into everything (break B6). The per-*endpoint* half of this
   gate — 403ing a named surface — lands with the surfaces themselves: `metrics` with `/metrics`,
   `batch` with the batch API, rather than as a middleware with nothing yet to guard.
+  The remaining Atlas DoDs are tracked below.
+- **M5 observability (Atlas §6, and §5's `/metrics` half) has landed.** `tracing` replaces every
+  request-path `println!`, `/api/extract` opens a `request_id`-bearing span, and `synthpass-serve`
+  serves Prometheus text at `GET /metrics` — inside the auth layer and gated on the `metrics`
+  license feature, so the per-endpoint half of the licensing gate now has its first real consumer.
+  Counters cover documents by tier and stage failures; latency histograms cover the OCR and Tier-2
+  stages; queue depth is a gauge. **One new dependency** (`tracing-subscriber`), justified in
+  [`CHANGELOG.md`](../CHANGELOG.md) and in the `[workspace.dependencies]` comment; no metrics
+  crate — the exposition format is hand-rolled.
+  The **"no PII in any log line" DoD is now an executable test**
+  (`crates/synthpass-pipeline/tests/pii_logging.rs`) rather than a convention, and the rule is
+  codified as a review checklist in [`CONTRIBUTING.md`](../CONTRIBUTING.md). Writing it surfaced a
+  trap worth recording: `tracing` caches callsite interest process-globally, so the same assertions
+  inside the library passed *vacuously* — capturing nothing — once sibling tests had already driven
+  those callsites. It lives in its own test binary and asserts the harness captured something
+  before asserting what it did not contain.
   The remaining Atlas DoDs — OCR region detection by geometry, the bounded job queue / batch API
-  (`Pipeline::submit`/`JobHandle`, `POST /api/extract/batch`, `GET /api/jobs/{id}`), `tracing` +
-  `/metrics`, and GBNF-constrained Tier-2 decoding — are still not started.
+  (`Pipeline::submit`/`JobHandle`, `POST /api/extract/batch`, `GET /api/jobs/{id}`), and
+  GBNF-constrained Tier-2 decoding — are still not started.
 - **A nightly bench-data-collection workflow has also shipped** (PR #38,
   `.github/workflows/bench-data-collection.yml`): runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on a

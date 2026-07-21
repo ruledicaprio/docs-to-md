@@ -229,9 +229,10 @@ const DEFAULT_OCR_MODEL_DIR: &str = ".";
 pub fn engine_from_env() -> Box<dyn OcrEngine> {
     let requested = std::env::var("SYNTHPASS_OCR_ENGINE").unwrap_or_else(|_| "rust".into());
     if requested != "rust" {
-        eprintln!(
-            "[synthpass] SYNTHPASS_OCR_ENGINE={requested} is no longer available (the Tesseract \
-             `native` engine was retired in v1.2.0) — using the pure-Rust engine"
+        tracing::warn!(
+            requested = %requested,
+            "SYNTHPASS_OCR_ENGINE is no longer available (the Tesseract `native` engine was \
+             retired in v1.2.0) — using the pure-Rust engine"
         );
     }
     let model_dir =
