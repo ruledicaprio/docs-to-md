@@ -32,7 +32,7 @@ mod emit;
 mod parser;
 
 pub use checksum::{check_digit, verify};
-pub use countries::country_name;
+pub use countries::{code_for_name, country_name};
 pub use dates::{expand_date, expand_date_with_pivot, Date, DateValidity, CURRENT_YY};
 pub use emit::{format_td3, Td3Fields};
 pub use parser::{find_and_parse, parse_td1, parse_td2, parse_td3};
