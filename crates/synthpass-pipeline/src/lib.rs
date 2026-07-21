@@ -558,7 +558,7 @@ fn lift_tier2_extraction(extraction: &Extraction, model_id: Option<String>) -> E
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use synthpass_core::v2::{FieldConfidence, LLM_HEURISTIC_CONFIDENCE};
+    use synthpass_core::v2::LLM_HEURISTIC_CONFIDENCE;
 
     /// Serializes tests that read or mutate `SYNTHPASS_JSON_V1` — the env var is
     /// process-global, and `cargo test` runs cases on parallel threads.
@@ -799,8 +799,14 @@ mod tests {
             },
             "the backend's real model id is stamped, not 'unknown'"
         );
-        assert_eq!(v2.confidence, FieldConfidence::llm_heuristic());
-        assert_eq!(v2.confidence.document_number, LLM_HEURISTIC_CONFIDENCE);
+        // `mock_extraction` sets document_type/surname/given_names/
+        // document_number to plausible-looking values, so their per-field
+        // heuristic score is upgraded above the flat baseline (see
+        // synthpass-core::v2::heuristic_field_confidence); fields it leaves
+        // absent (e.g. personal_number) stay at the flat baseline.
+        assert!(!v2.confidence.all_proven());
+        assert!(v2.confidence.document_number > LLM_HEURISTIC_CONFIDENCE);
+        assert_eq!(v2.confidence.personal_number, LLM_HEURISTIC_CONFIDENCE);
         assert!(
             result.extracted.is_some(),
             "v1 compat field still populated"
