@@ -106,6 +106,14 @@ pub struct ExtractionV2 {
     /// suspect. [`MrzBlock::lines`] carries PII and is zeroized on drop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mrz: Option<MrzBlock>,
+    /// Line-1 integrity verdict (`crate::fusion::check_line1_integrity`),
+    /// when an MRZ was found. Distinct from `mrz.checks`: that says whether
+    /// the check digits verify (line 2 only — TD1/TD2/TD3 carry none for
+    /// line 1); this says whether line 1 looks internally consistent with
+    /// what line 2 and the ICAO country table say it should. `None` on the
+    /// Tier-2 (LLM) path, which has no MRZ to check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line1_integrity: Option<crate::fusion::Verdict>,
     /// Date-plausibility summary — unchanged semantics from v1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[zeroize(skip)]
@@ -142,6 +150,7 @@ impl Default for ExtractionV2 {
             confidence: FieldConfidence::default(),
             provenance: Provenance::default(),
             mrz: None,
+            line1_integrity: None,
             validity: None,
             portrait: None,
             barcodes: Vec::new(),
@@ -575,6 +584,12 @@ impl From<&Extraction> for ExtractionV2 {
             confidence,
             provenance,
             mrz,
+            // Not recomputed on this legacy lift: v1's `Extraction` only kept
+            // the flattened scalar strings, not the structured `mrz::MrzData`
+            // `check_line1_integrity` needs. The native pipeline path
+            // (`extraction_v2_from_mrz`) has the real value and sets it
+            // directly.
+            line1_integrity: None,
             validity: v1.validity,
             portrait: None,
             barcodes: Vec::new(),

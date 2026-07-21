@@ -850,6 +850,7 @@ fn extraction_v2_from_mrz(m: &mrz::MrzData) -> ExtractionV2 {
             composite: m.checks.composite,
         },
     });
+    v2.line1_integrity = Some(synthpass_core::fusion::check_line1_integrity(m));
     v2
 }
 
@@ -1284,6 +1285,11 @@ mod tests {
         assert_eq!(v2.confidence.document_number, 1.0);
         assert_eq!(v2.confidence.date_of_birth, 1.0);
         assert_eq!(v2.confidence.date_of_expiry, 1.0);
+        assert_eq!(
+            v2.line1_integrity,
+            Some(synthpass_core::fusion::Verdict::Accepted),
+            "a clean specimen has no line-1 integrity findings"
+        );
         assert_eq!(v2.fields.document_number.as_deref(), Some("007007007"));
         assert_eq!(v2.document.mrz_format, Some(MrzFormat::Td3));
         let mrz = v2.mrz.as_ref().expect("MRZ block present on Tier 1");
@@ -1300,6 +1306,51 @@ mod tests {
         .expect("persisted json parses");
         assert_eq!(on_disk["schema_version"], serde_json::json!(2));
         assert_eq!(on_disk["provenance"]["kind"], json_str("mrz_checksum"));
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// Line 1 with the `<<` name separator collapsed — the exact corruption
+    /// `synthpass-bench`'s per-field CER measurement found in the synthetic
+    /// corpus: OCR drops the interior filler run, the trailing filler absorbs
+    /// the loss, so the line stays 44 characters and parses cleanly while
+    /// `given_names` comes back empty and the whole name lands in `surname`.
+    /// Line 2 (and therefore every check digit) is untouched, so this is
+    /// still `Method::MrzDeterministic` — checksum-proven and structurally
+    /// wrong at the same time, which is precisely the gap `line1_integrity`
+    /// exists to surface.
+    const HRV_TD3_COLLAPSED_FILLER_MARKDOWN: &str = "## PUTOVNICA\n\nP<HRVSPECIMENSPECIMEN<<<<<<<<<<<<<<<<<<<<<<<\n0070070071HRV8212258F1407019<<<<<<<<<<<<<<06\n";
+
+    #[tokio::test]
+    async fn tier1_flags_the_collapsed_filler_run_corruption() {
+        let (input, dir) = temp_input("tier1-collapsed").await;
+        let pipeline = Pipeline::new(
+            Box::new(StaticOcr(HRV_TD3_COLLAPSED_FILLER_MARKDOWN)),
+            Box::new(MockBackend),
+        );
+
+        let result = pipeline.process_document(&input).await.expect("process");
+
+        assert_eq!(
+            result.method,
+            Method::MrzDeterministic,
+            "line 2 is untouched, so the checksum still validates"
+        );
+        let v2 = result.extracted_v2.as_ref().expect("v2 extraction");
+        assert_eq!(
+            v2.fields.given_names.as_deref(),
+            Some(""),
+            "the collapsed separator leaves given_names empty"
+        );
+        assert_eq!(
+            v2.line1_integrity,
+            Some(synthpass_core::fusion::Verdict::NeedsReview {
+                reasons: vec![synthpass_core::fusion::Finding::MissingNameSeparator {
+                    surname_len: v2.fields.surname.as_deref().unwrap_or_default().len(),
+                }]
+            }),
+            "a checksum-valid document can still have a structurally wrong line 1"
+        );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -1322,6 +1373,11 @@ mod tests {
                 model: "mock-model.gguf".into()
             },
             "the backend's real model id is stamped, not 'unknown'"
+        );
+        assert!(
+            v2.line1_integrity.is_none(),
+            "no MRZ was found on the Tier-2 path, so there's nothing for \
+             check_line1_integrity to run over"
         );
         // `mock_extraction` sets document_type/surname/given_names/
         // document_number to plausible-looking values, so their per-field

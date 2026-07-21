@@ -23,6 +23,8 @@
 //! the ranking is ordinal on purpose.
 
 use mrz::MrzData;
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 /// Why a field's value is believed, ranked from strongest to weakest.
 ///
@@ -34,7 +36,8 @@ use mrz::MrzData;
 /// exactly the failure `FieldConfidence::proven() == 1.0` on unverified line-1
 /// fields already demonstrates. An ordinal scale says only "which claim is
 /// stronger", which is what the data actually supports today.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Support {
     /// An ICAO check digit mathematically verifies this exact value.
     CheckDigit,
@@ -49,7 +52,13 @@ pub enum Support {
 
 /// One integrity finding about a parsed MRZ record. `NeedsReview`'s `reasons`
 /// are these, rendered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Carries PII: `got`/`issuing_country`/`nationality` are copies of the same
+/// ICAO country codes already stored (and zeroized) in `ExtractionFields` —
+/// short, but real. `Zeroize`d field-by-field rather than skipped, matching
+/// [`crate::v2::MrzBlock`]'s discipline for its own copy of the raw zone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Finding {
     /// `issuing_country` is not a recognized ICAO/ISO 3166-1 code — the
     /// clearest, cheapest signal of a shifted line 1.
@@ -64,15 +73,21 @@ pub enum Finding {
     /// `given_names` is empty while `surname` is long — the signature of the
     /// collapsed-filler corruption: `parse_td3`'s `<<` split
     /// (`mrz::parser::clean_name`) never fired, so the whole name line landed
-    /// in `surname`.
-    MissingNameSeparator { surname_len: usize },
+    /// in `surname`. `surname_len` is a length, not PII, but carries no
+    /// `Zeroize` impl of its own (`usize` isn't `Copy`-zeroizable by derive
+    /// without an explicit skip).
+    MissingNameSeparator {
+        #[zeroize(skip)]
+        surname_len: usize,
+    },
 }
 
 /// Verdict for an [`MrzData`] record, from the checks in this module.
 /// Distinct from [`mrz::MrzData::valid`] — that asks "do the check digits
 /// verify", this asks "does the rest of the record look internally
 /// consistent". A document can pass one and fail the other.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Verdict {
     /// No integrity findings.
     Accepted,
