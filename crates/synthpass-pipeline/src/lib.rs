@@ -49,10 +49,14 @@ pub struct Pipeline {
     /// `Zeroizing` wipes the key from memory when the `Pipeline` is dropped.
     encrypt_key: Option<Zeroizing<[u8; 32]>>,
     /// Consumer GPUs (e.g. GTX 970, 3.5 GB VRAM) fit exactly one GGUF model
-    /// instance — LLM inference is serialized so concurrent callers queue
-    /// instead of racing the same `llama.cpp` context (also enforced,
-    /// defense-in-depth, inside `synthpass-llm`'s `NativeLlm` generation lock).
-    /// One permit = one concurrent Tier-2 call.
+    /// instance by default — LLM inference is serialized so concurrent
+    /// callers queue instead of racing the same `llama.cpp` context (also
+    /// enforced, defense-in-depth, inside `synthpass-llm`'s `NativeLlm`
+    /// generation lock). One permit = one concurrent Tier-2 call; permit
+    /// count is configurable via `SYNTHPASS_LLM_CONTEXTS` (see [`from_env`])
+    /// for hardware with room for more than one loaded context.
+    ///
+    /// [`from_env`]: Pipeline::from_env
     llm_semaphore: Arc<Semaphore>,
     /// Requests currently queued or in flight against the inferer. Lets a
     /// caller (e.g. `synthpass-serve`) reject new work fast under overload instead
@@ -103,6 +107,20 @@ impl From<std::io::Error> for PipelineError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
     }
+}
+
+/// Parses `SYNTHPASS_LLM_CONTEXTS`'s raw value into a Tier-2 permit count,
+/// falling back to 1 for anything unset, unparsable, or non-positive.
+/// `Semaphore::new(0)` would deadlock every Tier-2 call forever waiting for
+/// a permit that can never exist, so this must fail safe rather than wedge
+/// the pipeline. Pulled out of [`Pipeline::from_env`] as a pure function so
+/// the fallback logic is unit-testable without mutating the process
+/// environment (unsafe under this crate's default multi-threaded test
+/// runner).
+fn parse_llm_contexts(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(1)
 }
 
 /// Which extraction tier produced the final JSON.
@@ -173,12 +191,26 @@ impl Pipeline {
     ///
     /// [`from_env`]: Pipeline::from_env
     pub fn new(ocr: Box<dyn OcrEngine>, infer: Box<dyn InferBackend>) -> Self {
+        Self::with_llm_contexts(ocr, infer, 1)
+    }
+
+    /// Like [`new`](Pipeline::new), but with an explicit LLM-context permit
+    /// count instead of the hardcoded default of 1 — split out so tests can
+    /// exercise a specific count directly, without going through
+    /// [`from_env`](Pipeline::from_env)'s process-global environment
+    /// variable (unsafe to mutate under this crate's default multi-threaded
+    /// test runner).
+    fn with_llm_contexts(
+        ocr: Box<dyn OcrEngine>,
+        infer: Box<dyn InferBackend>,
+        contexts: usize,
+    ) -> Self {
         Self {
             ocr,
             infer,
             audit_log: None,
             encrypt_key: None,
-            llm_semaphore: Arc::new(Semaphore::new(1)),
+            llm_semaphore: Arc::new(Semaphore::new(contexts.max(1))),
             llm_queue_depth: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -197,10 +229,14 @@ impl Pipeline {
     }
 
     /// Configure from the environment: `SYNTHPASS_OCR_ENGINE` (`rust` | `native`);
-    /// `SYNTHPASS_MODEL_PATH` / `SYNTHPASS_MODEL_N_CTX` for the Tier-2 model; and
-    /// Tier-3 `SYNTHPASS_AUDIT_LOG` / `SYNTHPASS_KEY` (base64 32-byte AES-256 key).
+    /// `SYNTHPASS_MODEL_PATH` / `SYNTHPASS_MODEL_N_CTX` for the Tier-2 model;
+    /// `SYNTHPASS_LLM_CONTEXTS` for the number of concurrent Tier-2 calls
+    /// allowed (default 1); and Tier-3 `SYNTHPASS_AUDIT_LOG` / `SYNTHPASS_KEY`
+    /// (base64 32-byte AES-256 key).
     pub fn from_env() -> Self {
-        let mut pipeline = Self::new(ocr::engine_from_env(), infer::backend_from_env());
+        let contexts = parse_llm_contexts(std::env::var("SYNTHPASS_LLM_CONTEXTS").ok().as_deref());
+        let mut pipeline =
+            Self::with_llm_contexts(ocr::engine_from_env(), infer::backend_from_env(), contexts);
         pipeline.audit_log = std::env::var("SYNTHPASS_AUDIT_LOG").ok().map(PathBuf::from);
         pipeline.encrypt_key = match std::env::var("SYNTHPASS_KEY") {
             Ok(s) => match synthpass_core::crypt::key_from_base64(&s) {
@@ -236,6 +272,17 @@ impl Pipeline {
     /// accepting it unboundedly.
     pub fn llm_queue_depth(&self) -> usize {
         self.llm_queue_depth.load(Ordering::Relaxed)
+    }
+
+    /// Available Tier-2 permits — i.e. how many concurrent
+    /// [`extract_via_inferer`](Pipeline::extract_via_inferer) calls could
+    /// proceed right now without queuing. Test-only: a real caller has no
+    /// use for this (queue depth is the actionable signal), but it's the
+    /// most direct way to prove [`with_llm_contexts`](Pipeline::with_llm_contexts)
+    /// actually configured the semaphore it claims to.
+    #[cfg(test)]
+    fn llm_available_permits(&self) -> usize {
+        self.llm_semaphore.available_permits()
     }
 
     /// Tier 2: call the active inference backend and get back the canonical
@@ -697,6 +744,48 @@ mod tests {
             0,
             "guard releases after streaming completion too"
         );
+    }
+
+    #[test]
+    fn parse_llm_contexts_falls_back_to_one_on_bad_input() {
+        assert_eq!(parse_llm_contexts(None), 1, "unset falls back to 1");
+        assert_eq!(
+            parse_llm_contexts(Some("0")),
+            1,
+            "zero would deadlock every Tier-2 call"
+        );
+        assert_eq!(
+            parse_llm_contexts(Some("abc")),
+            1,
+            "unparsable falls back to 1"
+        );
+        assert_eq!(
+            parse_llm_contexts(Some("-1")),
+            1,
+            "negative falls back to 1"
+        );
+    }
+
+    #[test]
+    fn parse_llm_contexts_accepts_a_positive_count() {
+        assert_eq!(parse_llm_contexts(Some("3")), 3);
+        assert_eq!(parse_llm_contexts(Some("1")), 1);
+    }
+
+    #[test]
+    fn with_llm_contexts_configures_that_many_permits() {
+        let pipeline = Pipeline::with_llm_contexts(Box::new(NoopOcr), Box::new(MockBackend), 3);
+        assert_eq!(pipeline.llm_available_permits(), 3);
+    }
+
+    #[test]
+    fn with_llm_contexts_floors_zero_to_one_permit() {
+        // Defense-in-depth: even if a future caller bypasses
+        // parse_llm_contexts's own guard, the semaphore constructor itself
+        // must never end up with zero permits (that deadlocks every Tier-2
+        // call forever).
+        let pipeline = Pipeline::with_llm_contexts(Box::new(NoopOcr), Box::new(MockBackend), 0);
+        assert_eq!(pipeline.llm_available_permits(), 1);
     }
 
     // ── M1: ExtractionV2 through the full pipeline (OCR → tier → JSON) ──
