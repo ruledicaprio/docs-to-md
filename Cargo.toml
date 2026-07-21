@@ -4,6 +4,7 @@ members = [
     "crates/mrz",
     "crates/mrz-wasm",
     "crates/synthpass-gen",
+    "crates/synthpass-bench",
     "crates/synthpass-core",
     "crates/synthpass-llm",
     "crates/synthpass-ocr",

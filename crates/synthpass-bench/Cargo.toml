@@ -1,0 +1,14 @@
+[package]
+name = "synthpass-bench"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Always built with real glyphs regardless of synthpass-gen's own default —
+# a benchmark measuring OCR hit rate against placeholder bars would be
+# measuring the wrong thing.
+synthpass-gen = { path = "../synthpass-gen", features = ["embedded-fonts"] }
+synthpass-ocr = { path = "../synthpass-ocr" }
+# The zero-dep checksum oracle deciding hit vs. miss.
+mrz = { path = "../mrz" }
+image = { workspace = true }
