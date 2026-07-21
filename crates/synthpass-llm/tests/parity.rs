@@ -114,9 +114,10 @@ fn native_llm_field_accuracy_over_sample_set() {
     let mut matched = 0usize;
 
     for name in FIXTURES {
-        let (Some(md_path), Some(json_path)) =
-            (find_sample(&format!("{name}.md")), find_sample(&format!("{name}.json")))
-        else {
+        let (Some(md_path), Some(json_path)) = (
+            find_sample(&format!("{name}.md")),
+            find_sample(&format!("{name}.json")),
+        ) else {
             eprintln!("skipping {name}: missing fixture files");
             continue;
         };
