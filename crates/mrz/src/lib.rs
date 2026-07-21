@@ -34,7 +34,7 @@ mod parser;
 pub use checksum::{check_digit, verify};
 pub use countries::{code_for_name, country_name};
 pub use dates::{expand_date, expand_date_with_pivot, Date, DateValidity, CURRENT_YY};
-pub use emit::{format_td3, Td3Fields};
+pub use emit::{format_td1, format_td2, format_td3, Td1Fields, Td2Fields, Td3Fields};
 pub use parser::{find_and_parse, parse_mrv_a, parse_mrv_b, parse_td1, parse_td2, parse_td3};
 
 /// Per-field check-digit verification results.

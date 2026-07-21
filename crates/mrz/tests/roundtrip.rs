@@ -1,7 +1,10 @@
-//! `format_td3` round-trip tests: the emitter is correct iff it is the exact
-//! inverse of `parse_td3`.
+//! `format_td3`/`format_td2`/`format_td1` round-trip tests: each emitter is
+//! correct iff it is the exact inverse of its matching `parse_*` function.
 
-use mrz::{format_td3, parse_td3, Td3Fields};
+use mrz::{
+    format_td1, format_td2, format_td3, parse_td1, parse_td2, parse_td3, Td1Fields, Td2Fields,
+    Td3Fields,
+};
 use proptest::prelude::*;
 
 // Official ICAO 9303 part 4 specimen (Utopia / Anna Maria Eriksson) — same
@@ -134,5 +137,205 @@ proptest! {
         prop_assert_eq!(&parsed.date_of_expiry[5..7], &expected_mmdd_exp[0..2]);
         prop_assert_eq!(&parsed.date_of_expiry[8..10], &expected_mmdd_exp[2..4]);
         prop_assert_eq!(&parsed.date_of_expiry[2..4], &date_of_expiry[0..2]);
+    }
+}
+
+// Official ICAO 9303 part 6 (TD2) specimen (Utopia / Anna Maria Eriksson) —
+// same constants as the ones pinned in `src/lib.rs`'s test module.
+const TD2_L1: &str = "I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<";
+const TD2_L2: &str = "D231458907UTO7408122F1204159<<<<<<<6";
+
+#[test]
+fn td2_specimen_byte_for_byte() {
+    let fields = Td2Fields {
+        document_code: "I".to_string(),
+        issuing_country: "UTO".to_string(),
+        document_number: "D23145890".to_string(),
+        surname: "ERIKSSON".to_string(),
+        given_names: "ANNA MARIA".to_string(),
+        nationality: "UTO".to_string(),
+        date_of_birth: "740812".to_string(),
+        sex: "F".to_string(),
+        date_of_expiry: "120415".to_string(),
+        optional_data: None,
+    };
+
+    let expected = format!("{TD2_L1}\n{TD2_L2}");
+    assert_eq!(format_td2(&fields), expected);
+}
+
+#[test]
+fn td2_round_trips_as_valid() {
+    let fields = Td2Fields {
+        document_code: "I".to_string(),
+        issuing_country: "UTO".to_string(),
+        document_number: "D23145890".to_string(),
+        surname: "ERIKSSON".to_string(),
+        given_names: "ANNA MARIA".to_string(),
+        nationality: "UTO".to_string(),
+        date_of_birth: "740812".to_string(),
+        sex: "F".to_string(),
+        date_of_expiry: "120415".to_string(),
+        optional_data: None,
+    };
+
+    let mrz = format_td2(&fields);
+    let (l1, l2) = mrz.split_once('\n').unwrap();
+    let d = parse_td2(l1, l2).unwrap();
+    assert!(d.valid(), "checks: {:?}", d.checks);
+}
+
+// Capped so surname + "<<" + given_names never exceeds the 31-char (TD2) /
+// 30-char (TD1) name field (14 + 2 + 14 = 30 <= both) — narrower than
+// `name_strategy` (which is sized for TD3's wider 39-char field).
+fn short_name_strategy() -> impl Strategy<Value = String> {
+    "[A-Z]{1,14}"
+}
+
+fn optional_data_strategy(max_len: usize) -> impl Strategy<Value = Option<String>> {
+    prop_oneof![
+        Just(None),
+        proptest::string::string_regex(&format!("[A-Z0-9]{{1,{max_len}}}"))
+            .unwrap()
+            .prop_map(Some),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn td2_arbitrary_fields_round_trip(
+        document_number in doc_number_strategy(),
+        surname in short_name_strategy(),
+        given_names in short_name_strategy(),
+        date_of_birth in yymmdd_strategy(),
+        sex in sex_strategy(),
+        date_of_expiry in yymmdd_strategy(),
+        optional_data in optional_data_strategy(7),
+    ) {
+        let fields = Td2Fields {
+            document_code: "I".to_string(),
+            issuing_country: "UTO".to_string(),
+            document_number: document_number.clone(),
+            surname: surname.clone(),
+            given_names: given_names.clone(),
+            nationality: "UTO".to_string(),
+            date_of_birth: date_of_birth.clone(),
+            sex: sex.clone(),
+            date_of_expiry: date_of_expiry.clone(),
+            optional_data,
+        };
+
+        let mrz = format_td2(&fields);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        prop_assert_eq!(l1.len(), 36);
+        prop_assert_eq!(l2.len(), 36);
+
+        let parsed = parse_td2(l1, l2).unwrap();
+        prop_assert!(parsed.valid(), "checks: {:?}", parsed.checks);
+
+        prop_assert_eq!(&parsed.document_number, &document_number);
+        prop_assert_eq!(&parsed.surname, &surname);
+        prop_assert_eq!(&parsed.given_names, &given_names);
+        prop_assert_eq!(&parsed.sex, &sex);
+    }
+}
+
+// Official ICAO 9303 part 5 (TD1) specimen (Utopia / Anna Maria Eriksson) —
+// same constants as the ones pinned in `src/lib.rs`'s test module.
+const TD1_L1: &str = "I<UTOD231458907<<<<<<<<<<<<<<<";
+const TD1_L2: &str = "7408122F1204159UTO<<<<<<<<<<<6";
+const TD1_L3: &str = "ERIKSSON<<ANNA<MARIA<<<<<<<<<<";
+
+#[test]
+fn td1_specimen_byte_for_byte() {
+    let fields = Td1Fields {
+        document_code: "I".to_string(),
+        issuing_country: "UTO".to_string(),
+        document_number: "D23145890".to_string(),
+        optional_data_1: None,
+        surname: "ERIKSSON".to_string(),
+        given_names: "ANNA MARIA".to_string(),
+        nationality: "UTO".to_string(),
+        date_of_birth: "740812".to_string(),
+        sex: "F".to_string(),
+        date_of_expiry: "120415".to_string(),
+        optional_data_2: None,
+    };
+
+    let expected = format!("{TD1_L1}\n{TD1_L2}\n{TD1_L3}");
+    assert_eq!(format_td1(&fields), expected);
+}
+
+#[test]
+fn td1_round_trips_as_valid() {
+    let fields = Td1Fields {
+        document_code: "I".to_string(),
+        issuing_country: "UTO".to_string(),
+        document_number: "D23145890".to_string(),
+        optional_data_1: None,
+        surname: "ERIKSSON".to_string(),
+        given_names: "ANNA MARIA".to_string(),
+        nationality: "UTO".to_string(),
+        date_of_birth: "740812".to_string(),
+        sex: "F".to_string(),
+        date_of_expiry: "120415".to_string(),
+        optional_data_2: None,
+    };
+
+    let mrz = format_td1(&fields);
+    let mut lines = mrz.split('\n');
+    let l1 = lines.next().unwrap();
+    let l2 = lines.next().unwrap();
+    let l3 = lines.next().unwrap();
+    let d = parse_td1(l1, l2, l3).unwrap();
+    assert!(d.valid(), "checks: {:?}", d.checks);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn td1_arbitrary_fields_round_trip(
+        document_number in doc_number_strategy(),
+        optional_data_1 in optional_data_strategy(15),
+        surname in short_name_strategy(),
+        given_names in short_name_strategy(),
+        date_of_birth in yymmdd_strategy(),
+        sex in sex_strategy(),
+        date_of_expiry in yymmdd_strategy(),
+        optional_data_2 in optional_data_strategy(11),
+    ) {
+        let fields = Td1Fields {
+            document_code: "I".to_string(),
+            issuing_country: "UTO".to_string(),
+            document_number: document_number.clone(),
+            optional_data_1,
+            surname: surname.clone(),
+            given_names: given_names.clone(),
+            nationality: "UTO".to_string(),
+            date_of_birth: date_of_birth.clone(),
+            sex: sex.clone(),
+            date_of_expiry: date_of_expiry.clone(),
+            optional_data_2,
+        };
+
+        let mrz = format_td1(&fields);
+        let mut lines = mrz.split('\n');
+        let l1 = lines.next().unwrap();
+        let l2 = lines.next().unwrap();
+        let l3 = lines.next().unwrap();
+        prop_assert_eq!(l1.len(), 30);
+        prop_assert_eq!(l2.len(), 30);
+        prop_assert_eq!(l3.len(), 30);
+
+        let parsed = parse_td1(l1, l2, l3).unwrap();
+        prop_assert!(parsed.valid(), "checks: {:?}", parsed.checks);
+
+        prop_assert_eq!(&parsed.document_number, &document_number);
+        prop_assert_eq!(&parsed.surname, &surname);
+        prop_assert_eq!(&parsed.given_names, &given_names);
+        prop_assert_eq!(&parsed.sex, &sex);
     }
 }

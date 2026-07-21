@@ -17,13 +17,13 @@ The core crate has **no runtime dependencies** and compiles to
 | Format | Document                          | Layout            | Status |
 | ------ | --------------------------------- | ----------------- | ------ |
 | TD3    | Passports                         | 2 lines × 44      | ✅ parse + emit |
-| TD2    | Official travel documents / IDs   | 2 lines × 36      | ✅ parse |
-| TD1    | ID cards                          | 3 lines × 30      | ✅ parse |
+| TD2    | Official travel documents / IDs   | 2 lines × 36      | ✅ parse + emit |
+| TD1    | ID cards                          | 3 lines × 30      | ✅ parse + emit |
 | MRV-A / MRV-B | Visas                      | —                 | ❌ not yet |
 
-Emission (`format_td3`) currently covers **TD3 only**. Machine Readable Visa
-(MRV-A / MRV-B) parsing and document-number overflow (numbers longer than the
-9-character field) are known gaps tracked for a later release.
+Machine Readable Visa (MRV-A / MRV-B) parsing and document-number overflow
+(numbers longer than the 9-character field) are known gaps tracked for a later
+release.
 
 ## Usage
 
@@ -68,7 +68,12 @@ assert!(doc.checks.composite);
 
 `parse_td1` and `parse_td2` cover the other two formats.
 
-### Emit a valid TD3 zone
+### Emit a valid MRZ
+
+All three formats emit — `format_td3` / `format_td2` / `format_td1`, each taking
+its own `Td3Fields` / `Td2Fields` / `Td1Fields` in MRZ-native form (`YYMMDD`
+dates, uppercase `[A-Z0-9]`). Every check digit is computed for you, so the
+output always round-trips back through the matching parser as `valid()`.
 
 ```rust
 use mrz::{format_td3, Td3Fields};
@@ -86,6 +91,26 @@ let lines = format_td3(&Td3Fields {
     ..Default::default()
 });
 // Round-trips: parse_td3(&lines) is valid() == true.
+```
+
+`Td2Fields` and `Td1Fields` follow the same shape (with `optional_data` /
+`optional_data_1` + `optional_data_2` respectively):
+
+```rust
+use mrz::{format_td1, Td1Fields};
+
+let td1 = format_td1(&Td1Fields {
+    issuing_country: "UTO".into(),
+    document_number: "D23145890".into(),
+    surname: "ERIKSSON".into(),
+    given_names: "ANNA MARIA".into(),
+    nationality: "UTO".into(),
+    date_of_birth: "740812".into(),
+    sex: "F".into(),
+    date_of_expiry: "120415".into(),
+    ..Default::default() // document_code defaults to "I"
+});
+// Three 30-char lines; parse_td1 rebuilds them as valid().
 ```
 
 ## A valid read is not an in-date document

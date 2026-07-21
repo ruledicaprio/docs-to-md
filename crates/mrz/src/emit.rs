@@ -1,21 +1,29 @@
-//! TD3 (passport) MRZ emission — the deterministic inverse of [`crate::parse_td3`].
+//! MRZ emission for all three ICAO 9303 formats — the deterministic inverse of
+//! [`crate::parse_td3`], [`crate::parse_td2`], and [`crate::parse_td1`].
 //!
-//! Given structured field values, [`format_td3`] produces the two 44-character
-//! ICAO 9303 Part 4 lines with every check digit (document number, date of
-//! birth, date of expiry, personal number, composite) computed via the same
-//! [`crate::check_digit`] math the parser verifies against. Feeding the output
-//! back through [`crate::parse_td3`] always yields a record with
-//! `valid() == true`.
+//! Given structured field values, [`format_td3`], [`format_td2`], and
+//! [`format_td1`] produce the ICAO-specified lines with every check digit
+//! computed via the same [`crate::check_digit`] math the parsers verify
+//! against. Feeding the output back through the matching `parse_*` function
+//! always yields a record with `valid() == true`.
 //!
-//! Field widths and offsets mirror `parser::parse_td3` exactly:
-//! - Line 1: document code (2) + issuing country (3) + name field (39).
-//! - Line 2: document number (9) + check (1) + nationality (3) + date of
-//!   birth (6) + check (1) + sex (1) + date of expiry (6) + check (1) +
-//!   personal number (14) + check (1) + composite check (1).
-//!
-//! **Scope**: TD3 only. TD2 and TD1 emission are out of scope for this
-//! milestone (M1) — only [`crate::parse_td2`] / [`crate::parse_td1`] exist for
-//! those formats today.
+//! Field widths and offsets mirror the parsers exactly:
+//! - **TD3** (two 44-char lines): document code (2) + issuing country (3) +
+//!   name field (39) on line 1; document number (9) + check (1) +
+//!   nationality (3) + date of birth (6) + check (1) + sex (1) + date of
+//!   expiry (6) + check (1) + personal number (14) + check (1) + composite
+//!   check (1) on line 2.
+//! - **TD2** (two 36-char lines): document code (2) + issuing country (3) +
+//!   name field (31) on line 1; document number (9) + check (1) +
+//!   nationality (3) + date of birth (6) + check (1) + sex (1) + date of
+//!   expiry (6) + check (1) + optional data (7) + composite check (1) on
+//!   line 2. TD2 has no separate check digit over the optional-data field.
+//! - **TD1** (three 30-char lines): document code (2) + issuing country (3) +
+//!   document number (9) + check (1) + optional data 1 (15) on line 1; date
+//!   of birth (6) + check (1) + sex (1) + date of expiry (6) + check (1) +
+//!   nationality (3) + optional data 2 (11) + composite check (1) on line 2;
+//!   name field (30) on line 3. TD1 has no separate check digit over either
+//!   optional-data field.
 //!
 //! Input fields are taken in MRZ-native form (`YYMMDD` dates, uppercase
 //! `[A-Z0-9]`) rather than the parser's output form (ISO dates, spaced given
@@ -100,10 +108,10 @@ fn field(s: &str, width: usize) -> String {
     out
 }
 
-/// Build the 39-char name field: `SURNAME<<GIVEN<NAMES`, filler-padded.
-fn name_field(surname: &str, given_names: &str) -> String {
+/// Build the name field: `SURNAME<<GIVEN<NAMES`, padded/truncated to `width`.
+fn name_field(surname: &str, given_names: &str, width: usize) -> String {
     let combined = format!("{}<<{}", clean(surname), clean(given_names));
-    field(&combined, 39)
+    field(&combined, width)
 }
 
 fn digit_char(field: &str) -> char {
@@ -120,7 +128,7 @@ fn digit_char(field: &str) -> char {
 pub fn format_td3(fields: &Td3Fields) -> String {
     let doc_code = field(&fields.document_code, 2);
     let issuing = field(&fields.issuing_country, 3);
-    let name = name_field(&fields.surname, &fields.given_names);
+    let name = name_field(&fields.surname, &fields.given_names, 39);
     let line1 = format!("{doc_code}{issuing}{name}");
 
     let doc_num = field(&fields.document_number, 9);
@@ -161,4 +169,205 @@ pub fn format_td3(fields: &Td3Fields) -> String {
     debug_assert_eq!(line2.len(), 44);
 
     format!("{line1}\n{line2}")
+}
+
+/// Raw TD2 sub-fields, in MRZ-native form (see module docs).
+///
+/// `document_number` is limited to 9 characters (the field width); longer
+/// input is silently truncated. `date_of_birth` / `date_of_expiry` are
+/// `YYMMDD`, not ISO dates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Td2Fields {
+    /// Document code, e.g. `"I"` for identity card. Defaults to `"I"`.
+    pub document_code: String,
+    /// Issuing state (3-letter ICAO code).
+    pub issuing_country: String,
+    /// Document number, up to 9 characters.
+    pub document_number: String,
+    pub surname: String,
+    pub given_names: String,
+    /// Nationality (3-letter ICAO code).
+    pub nationality: String,
+    /// Date of birth as `YYMMDD`.
+    pub date_of_birth: String,
+    /// `"M"`, `"F"`, or `"X"` (unspecified — emitted as the filler `<`).
+    pub sex: String,
+    /// Date of expiry as `YYMMDD`.
+    pub date_of_expiry: String,
+    /// Optional data, up to 7 characters. TD2 has no check digit over this
+    /// field on its own — it only feeds the composite check.
+    pub optional_data: Option<String>,
+}
+
+impl Default for Td2Fields {
+    fn default() -> Self {
+        Self {
+            document_code: "I".to_string(),
+            issuing_country: String::new(),
+            document_number: String::new(),
+            surname: String::new(),
+            given_names: String::new(),
+            nationality: String::new(),
+            date_of_birth: String::new(),
+            sex: String::new(),
+            date_of_expiry: String::new(),
+            optional_data: None,
+        }
+    }
+}
+
+/// Emit a TD2 (identity-card) MRZ: two 36-character lines joined by `\n`.
+///
+/// The document number, date-of-birth, date-of-expiry, and composite check
+/// digits are computed from `fields` — the result always round-trips through
+/// [`crate::parse_td2`] with `valid() == true` (see `tests/roundtrip.rs`).
+/// TD2 has no separate check digit over the optional-data field.
+pub fn format_td2(fields: &Td2Fields) -> String {
+    let doc_code = field(&fields.document_code, 2);
+    let issuing = field(&fields.issuing_country, 3);
+    let name = name_field(&fields.surname, &fields.given_names, 31);
+    let line1 = format!("{doc_code}{issuing}{name}");
+    debug_assert_eq!(line1.len(), 36);
+
+    let doc_num = field(&fields.document_number, 9);
+    let doc_num_check = digit_char(&doc_num);
+    let nationality = field(&fields.nationality, 3);
+    let dob = field(&fields.date_of_birth, 6);
+    let dob_check = digit_char(&dob);
+    let sex = match fields.sex.to_ascii_uppercase().as_str() {
+        "M" => 'M',
+        "F" => 'F',
+        _ => '<',
+    };
+    let expiry = field(&fields.date_of_expiry, 6);
+    let expiry_check = digit_char(&expiry);
+    let optional = field(fields.optional_data.as_deref().unwrap_or(""), 7);
+
+    // 35 chars: everything except the composite digit itself, in the same
+    // layout `parser::parse_td2` expects (offsets 0..35).
+    let line2_body = format!(
+        "{doc_num}{doc_num_check}{nationality}{dob}{dob_check}{sex}{expiry}{expiry_check}{optional}"
+    );
+    debug_assert_eq!(line2_body.len(), 35);
+
+    // Composite: line2[0..10] (doc number + check) + line2[13..20]
+    // (DOB + check) + line2[21..35] (expiry + check + optional data) —
+    // mirrors `parser::parse_td2`'s `checks.composite` computation exactly.
+    let composite_input = format!(
+        "{}{}{}",
+        &line2_body[0..10],
+        &line2_body[13..20],
+        &line2_body[21..35]
+    );
+    let composite_check = digit_char(&composite_input);
+
+    let line2 = format!("{line2_body}{composite_check}");
+    debug_assert_eq!(line2.len(), 36);
+
+    format!("{line1}\n{line2}")
+}
+
+/// Raw TD1 sub-fields, in MRZ-native form (see module docs).
+///
+/// `document_number` is limited to 9 characters (the field width); longer
+/// input is silently truncated. `date_of_birth` / `date_of_expiry` are
+/// `YYMMDD`, not ISO dates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Td1Fields {
+    /// Document code, e.g. `"I"` for identity card. Defaults to `"I"`.
+    pub document_code: String,
+    /// Issuing state (3-letter ICAO code).
+    pub issuing_country: String,
+    /// Document number, up to 9 characters.
+    pub document_number: String,
+    /// Optional data on line 1, up to 15 characters. TD1 has no separate
+    /// check digit over this field on its own — it only feeds the composite.
+    pub optional_data_1: Option<String>,
+    pub surname: String,
+    pub given_names: String,
+    /// Nationality (3-letter ICAO code).
+    pub nationality: String,
+    /// Date of birth as `YYMMDD`.
+    pub date_of_birth: String,
+    /// `"M"`, `"F"`, or `"X"` (unspecified — emitted as the filler `<`).
+    pub sex: String,
+    /// Date of expiry as `YYMMDD`.
+    pub date_of_expiry: String,
+    /// Optional data on line 2, up to 11 characters. TD1 has no separate
+    /// check digit over this field on its own — it only feeds the composite.
+    pub optional_data_2: Option<String>,
+}
+
+impl Default for Td1Fields {
+    fn default() -> Self {
+        Self {
+            document_code: "I".to_string(),
+            issuing_country: String::new(),
+            document_number: String::new(),
+            optional_data_1: None,
+            surname: String::new(),
+            given_names: String::new(),
+            nationality: String::new(),
+            date_of_birth: String::new(),
+            sex: String::new(),
+            date_of_expiry: String::new(),
+            optional_data_2: None,
+        }
+    }
+}
+
+/// Emit a TD1 (ID-card) MRZ: three 30-character lines joined by `\n`.
+///
+/// The document number, date-of-birth, date-of-expiry, and composite check
+/// digits are computed from `fields` — the result always round-trips through
+/// [`crate::parse_td1`] with `valid() == true` (see `tests/roundtrip.rs`).
+/// TD1 has no separate check digit over either optional-data field.
+pub fn format_td1(fields: &Td1Fields) -> String {
+    let doc_code = field(&fields.document_code, 2);
+    let issuing = field(&fields.issuing_country, 3);
+    let doc_num = field(&fields.document_number, 9);
+    let doc_num_check = digit_char(&doc_num);
+    let optional1 = field(fields.optional_data_1.as_deref().unwrap_or(""), 15);
+    let line1 = format!("{doc_code}{issuing}{doc_num}{doc_num_check}{optional1}");
+    debug_assert_eq!(line1.len(), 30);
+
+    let dob = field(&fields.date_of_birth, 6);
+    let dob_check = digit_char(&dob);
+    let sex = match fields.sex.to_ascii_uppercase().as_str() {
+        "M" => 'M',
+        "F" => 'F',
+        _ => '<',
+    };
+    let expiry = field(&fields.date_of_expiry, 6);
+    let expiry_check = digit_char(&expiry);
+    let nationality = field(&fields.nationality, 3);
+    let optional2 = field(fields.optional_data_2.as_deref().unwrap_or(""), 11);
+
+    // 29 chars: everything except the composite digit itself, in the same
+    // layout `parser::parse_td1` expects (offsets 0..29).
+    let line2_body = format!("{dob}{dob_check}{sex}{expiry}{expiry_check}{nationality}{optional2}");
+    debug_assert_eq!(line2_body.len(), 29);
+
+    // Composite: line1[5..30] (doc number + check + optional-1) +
+    // line2[0..7] (DOB + check) + line2[8..15] (expiry + check) +
+    // line2[18..29] (optional-2) — mirrors `parser::parse_td1`'s
+    // `checks.composite` computation exactly.
+    let composite_input = format!(
+        "{}{}{}{}",
+        &line1[5..30],
+        &line2_body[0..7],
+        &line2_body[8..15],
+        &line2_body[18..29]
+    );
+    let composite_check = digit_char(&composite_input);
+
+    let line2 = format!("{line2_body}{composite_check}");
+    debug_assert_eq!(line2.len(), 30);
+
+    let line3 = name_field(&fields.surname, &fields.given_names, 30);
+    debug_assert_eq!(line3.len(), 30);
+
+    format!("{line1}\n{line2}\n{line3}")
 }
