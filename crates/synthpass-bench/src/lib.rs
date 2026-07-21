@@ -89,6 +89,13 @@ pub struct HitResult {
     /// parse is exactly the case where knowing which field broke is most
     /// useful. Empty only when there was nothing to compare.
     pub fields: Vec<FieldOutcome>,
+    /// Line-1 integrity verdict (`synthpass_core::fusion`) on the *read*
+    /// MRZ, whenever one parsed — independent of `hit`. The headline number
+    /// this exists for: among documents where `hit` is `true` (the Tier-1
+    /// gate a checksum alone can prove), what fraction still get flagged
+    /// here, since the checksum never covered `document_type`,
+    /// `issuing_country`, `surname`, or `given_names` in the first place.
+    pub line1_integrity: Option<synthpass_core::fusion::Verdict>,
 }
 
 /// Runs `image` through `ocr` and checks the result against `expected`'s
@@ -105,7 +112,7 @@ pub fn check_document(ocr: &NativeOcr, image: &DynamicImage, expected: &Labels) 
         fastrand_seed()
     ));
     let write_result = image.save(&path);
-    let (reason, fields) = run_check(&path, write_result, ocr, expected);
+    let (reason, fields, line1_integrity) = run_check(&path, write_result, ocr, expected);
     let _ = std::fs::remove_file(&path);
 
     HitResult {
@@ -113,32 +120,41 @@ pub fn check_document(ocr: &NativeOcr, image: &DynamicImage, expected: &Labels) 
         reason,
         elapsed: start.elapsed(),
         fields,
+        line1_integrity,
     }
 }
 
-/// Returns the miss reason (`None` on a hit) and the per-field breakdown.
+/// Returns the miss reason (`None` on a hit), the per-field breakdown, and
+/// the line-1 integrity verdict.
 ///
 /// Structured so the breakdown survives a miss: the old version returned
 /// early on a checksum failure, which threw away the read it had just
 /// obtained — precisely the read that says *which field* broke the checksum.
+type CheckOutcome = (
+    Option<MissReason>,
+    Vec<FieldOutcome>,
+    Option<synthpass_core::fusion::Verdict>,
+);
+
 fn run_check(
     path: &std::path::Path,
     write_result: image::ImageResult<()>,
     ocr: &NativeOcr,
     expected: &Labels,
-) -> (Option<MissReason>, Vec<FieldOutcome>) {
+) -> CheckOutcome {
     if let Err(e) = write_result {
         return (
             Some(MissReason::OcrError(format!(
                 "failed to write temp image: {e}"
             ))),
             Vec::new(),
+            None,
         );
     }
 
     let text = match ocr.recognize(path) {
         Ok(text) => text,
-        Err(e) => return (Some(MissReason::OcrError(e)), Vec::new()),
+        Err(e) => return (Some(MissReason::OcrError(e)), Vec::new(), None),
     };
 
     // Ground truth is the generator's own MRZ lines parsed back through the
@@ -157,6 +173,7 @@ fn run_check(
                      failure: {e:?}"
                 ))),
                 Vec::new(),
+                None,
             )
         }
     };
@@ -167,14 +184,16 @@ fn run_check(
             return (
                 Some(MissReason::NoMrzFound(format!("{e:?}"))),
                 total_loss(&truth),
+                None,
             )
         }
     };
 
     let fields = compare_fields(&truth, &decoded);
+    let line1_integrity = Some(synthpass_core::fusion::check_line1_integrity(&decoded));
 
     if !decoded.valid() {
-        return (Some(MissReason::ChecksumFailed), fields);
+        return (Some(MissReason::ChecksumFailed), fields, line1_integrity);
     }
     if decoded.document_number != truth.document_number {
         return (
@@ -183,9 +202,10 @@ fn run_check(
                 expected: truth.document_number.clone(),
             }),
             fields,
+            line1_integrity,
         );
     }
-    (None, fields)
+    (None, fields, line1_integrity)
 }
 
 /// The fields compared per document, as `(name, accessor)` pairs. One list so

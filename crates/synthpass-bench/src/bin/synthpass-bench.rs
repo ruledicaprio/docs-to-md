@@ -190,6 +190,12 @@ struct SeedResult {
     /// the worst documents.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fields: Vec<FieldReport>,
+    /// `true` iff `synthpass_core::fusion::check_line1_integrity` flagged
+    /// this read — reported independently of `hit`, since the checksum a
+    /// hit proves never covered `document_type`/`issuing_country`/`surname`/
+    /// `given_names` in the first place (see `docs/ROADMAP.md`'s per-field
+    /// CER note). `false` when no MRZ was read at all.
+    line1_flagged: bool,
 }
 
 #[derive(Serialize)]
@@ -272,6 +278,10 @@ fn main() {
                 None => image,
             };
             let result = check_document(&ocr, &image, &labels);
+            let line1_flagged = matches!(
+                result.line1_integrity,
+                Some(synthpass_core::fusion::Verdict::NeedsReview { .. })
+            );
             SeedResult {
                 seed,
                 profile: resolved.as_str(),
@@ -279,6 +289,7 @@ fn main() {
                 miss_kind: result.reason.as_ref().map(miss_kind),
                 reason: result.reason.map(|r| r.to_string()),
                 elapsed_ms: result.elapsed.as_millis(),
+                line1_flagged,
                 fields: result
                     .fields
                     .into_iter()
@@ -331,6 +342,20 @@ fn main() {
         for (kind, n) in &kinds {
             println!("  {n:>4}  {kind}");
         }
+    }
+
+    // The headline this measurement exists for: the checksum a `hit` proves
+    // never covered document_type/issuing_country/surname/given_names, so a
+    // passing Tier-1 gate and a structurally wrong line 1 can both be true of
+    // the same document at once. This reports how often that actually
+    // happens, rather than leaving it as the one hand-counted number in
+    // docs/ROADMAP.md's per-field CER note.
+    if hits > 0 {
+        let flagged_hits = results.iter().filter(|r| r.hit && r.line1_flagged).count();
+        println!(
+            "\nof {hits} Tier-1 hits, {flagged_hits} ({:.1}%) still have a line-1 integrity finding",
+            flagged_hits as f64 / hits as f64 * 100.0
+        );
     }
 
     // Mean CER per field, over every document — including those that never

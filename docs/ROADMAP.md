@@ -196,6 +196,17 @@ flowchart LR
   confusion table, and **(2)** an unverified-field problem needs a *validation* answer, not only
   a recognition one — line-1 fields should carry lower confidence and be reconcilable against the
   visual zone, since no checksum will ever do it for them.
+- **The validation answer, and the number it turned up.** `ExtractionV2`'s confidence no longer
+  claims a proof line 1 never had: `FieldConfidence::mrz_checksum_scope` scores only the four
+  check-digited fields at `1.0`; the other six sit at a new `MRZ_STRUCTURAL` (`0.9`) band, real
+  but never equal to a proof. `synthpass_core::fusion::check_line1_integrity` adds the
+  deterministic checks the missing arithmetic can't: `issuing_country` against the ICAO code
+  table, `issuing_country` against `nationality` (two independently-OCR'd MRZ lines agreeing —
+  an honest `Support::CrossField`, ranked below `Support::CheckDigit`, not equal to it), and an
+  empty `given_names` beside a long `surname`, the collapsed-filler-run signature above.
+  `synthpass-bench` now measures how often that gap actually bites rather than leaving it as one
+  hand-counted specimen: **of 29 Tier-1 hits on the 50-seed clean profile, 28 (96.6%) are still
+  flagged.** Detection before correction — filler-run fidelity itself remains future work.
 - **A nightly bench-data-collection workflow has also shipped** (PR #38,
   `.github/workflows/bench-data-collection.yml`): runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on a

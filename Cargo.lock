@@ -2847,6 +2847,7 @@ dependencies = [
  "mrz",
  "serde",
  "serde_json",
+ "synthpass-core",
  "synthpass-gen",
  "synthpass-ocr",
 ]
