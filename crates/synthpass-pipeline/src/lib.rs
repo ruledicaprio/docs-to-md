@@ -27,9 +27,9 @@ pub use infer::InferBackend;
 pub use infer::NativeInferer;
 pub use jobs::{DocumentEntry, DocumentStatus, JobHandle, JobId, JobStatus};
 pub use metrics::{MetricsSnapshot, PipelineMetrics};
-pub use ocr::OcrEngine;
 #[cfg(feature = "ocr-native-rust")]
 pub use ocr::RustOcrEngine;
+pub use ocr::{BBox, OcrEngine, OcrResult};
 
 use serde_json::Value;
 use std::fmt;
@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use synthpass_core::v2::{CheckDigits, ExtractionV2, MrzBlock, MrzFormat, Provenance};
+use synthpass_core::v2::{CheckDigits, ExtractionV2, ImageRef, MrzBlock, MrzFormat, Provenance};
 use synthpass_core::Extraction;
 use tokio::sync::{mpsc, Semaphore};
 use zeroize::Zeroizing;
@@ -257,6 +257,24 @@ pub struct PipelineResult {
     pub method: Method,
 }
 
+/// The result of [`Pipeline::ocr_and_tier1`] — a named struct rather than the
+/// growing tuple it replaced, once adding OCR geometry (`ocr`) made a
+/// 5-element tuple destructure unreadable at both call sites
+/// ([`Pipeline::process_document`], [`Pipeline::process_document_stream`]).
+/// `markdown` and `ocr.text` are the same string on purpose: `markdown` is
+/// the plain value Tier 1/Tier 2 and [`PipelineResult`] have always worked
+/// with, `ocr` carries the full [`OcrResult`] (geometry included) for callers
+/// that need more than text — duplicating one `String` clone per document is
+/// a small, one-time cost for not threading two half-overlapping shapes
+/// through the rest of this function.
+struct OcrStage {
+    markdown: String,
+    md_path: PathBuf,
+    mrz_data: Option<mrz::MrzData>,
+    tier1: Option<(Value, ExtractionV2)>,
+    ocr: OcrResult,
+}
+
 /// Progress/terminal events emitted by [`Pipeline::process_document_stream`].
 pub enum ProcessEvent {
     /// Incremental Tier-2 LLM text. Never sent on the Tier-1 fast path.
@@ -427,6 +445,21 @@ impl Pipeline {
     /// Tier 2: call the active inference backend and get back the canonical
     /// [`Extraction`] schema. Serialized behind `llm_semaphore` so this
     /// process never fires overlapping Tier-2 calls, regardless of backend.
+    ///
+    /// Normalizes the `Ok` value in place ([`synthpass_core::normalize::extraction`])
+    /// before returning — a Tier-2 read comes from the document's free-form
+    /// visual zone, not the constrained MRZ dialect, so a parity miss like
+    /// `"CROATIA"` vs `HRV` is the model reading correctly and just
+    /// reproducing the visual zone's own formatting; this is the single
+    /// point every Tier-2 caller passes through
+    /// ([`Pipeline::process_document`]/[`Pipeline::process_document_stream`]
+    /// both build their v2 record and persisted JSON from this return value),
+    /// so normalizing here — and only here, never on Tier 1's already
+    /// checksum-proven `extraction_from_mrz` output — covers every consumer
+    /// including the batch job queue in one place.
+    ///
+    /// [`Pipeline::process_document`]: Pipeline::process_document
+    /// [`Pipeline::process_document_stream`]: Pipeline::process_document_stream
     pub async fn extract_via_inferer(&self, markdown: &str) -> Result<Extraction, String> {
         let _depth = QueueDepthGuard::enter(&self.llm_queue_depth);
         let _permit = self
@@ -436,7 +469,7 @@ impl Pipeline {
             .expect("llm_semaphore is never closed");
 
         let started = Instant::now();
-        let result = self.infer.extract(markdown).await;
+        let mut result = self.infer.extract(markdown).await;
         let elapsed = started.elapsed();
         self.metrics.tier2_seconds.observe(elapsed);
         match &result {
@@ -455,6 +488,9 @@ impl Pipeline {
                 );
             }
         }
+        if let Ok(extraction) = &mut result {
+            synthpass_core::normalize::extraction(extraction);
+        }
         result
     }
 
@@ -465,22 +501,13 @@ impl Pipeline {
     ///
     /// [`process_document`]: Pipeline::process_document
     /// [`process_document_stream`]: Pipeline::process_document_stream
-    async fn ocr_and_tier1(
-        &self,
-        input: &Path,
-    ) -> Result<
-        (
-            String,
-            PathBuf,
-            Option<mrz::MrzData>,
-            Option<(Value, ExtractionV2)>,
-        ),
-        PipelineError,
-    > {
+    async fn ocr_and_tier1(&self, input: &Path) -> Result<OcrStage, PipelineError> {
         // Spans carry stage identity and *shape* only — byte counts, booleans,
         // durations. Never `markdown`, never a field value: `/metrics` and the
         // log stream both sit outside the trust boundary that the document
-        // itself does not leave.
+        // itself does not leave. Portrait/rotation are shape too (a box and a
+        // number of degrees, not document content), so they're safe to log
+        // alongside the rest.
         let ocr_started = Instant::now();
         // Bound OCR concurrency independently of Tier-2's `llm_semaphore`
         // (B2, `SYNTHPASS_OCR_THREADS` / `env_ocr_threads`). The permit is
@@ -494,8 +521,13 @@ impl Pipeline {
             .acquire()
             .await
             .expect("ocr_semaphore is never closed");
-        let markdown = match self.ocr.to_markdown(input).await {
-            Ok(markdown) => markdown,
+        // `recognize_detailed`, not `to_markdown`: the richer call gets us
+        // portrait/mrz_band/rotation geometry for free from engines that
+        // support it (`RustOcrEngine`), and degrades to plain text via
+        // `OcrEngine`'s default body for any engine that doesn't — see
+        // `ocr::OcrEngine::recognize_detailed`'s doc.
+        let ocr_result = match self.ocr.recognize_detailed(input).await {
+            Ok(result) => result,
             Err(e) => {
                 self.metrics.record_ocr_failure();
                 tracing::warn!(stage = "ocr", error = %e, "OCR stage failed");
@@ -507,10 +539,13 @@ impl Pipeline {
         tracing::debug!(
             stage = "ocr",
             elapsed_ms = ocr_elapsed.as_millis() as u64,
-            markdown_bytes = markdown.len(),
+            markdown_bytes = ocr_result.text.len(),
+            portrait_detected = ocr_result.portrait.is_some(),
+            rotation_degrees = ocr_result.rotation,
             "OCR complete"
         );
 
+        let markdown = ocr_result.text.clone();
         let md_path = input.with_extension("md");
         tokio::fs::write(&md_path, &markdown).await?;
 
@@ -529,7 +564,13 @@ impl Pipeline {
             checksums_valid = tier1.is_some(),
             "Tier-1 MRZ validation complete"
         );
-        Ok((markdown, md_path, mrz_data, tier1))
+        Ok(OcrStage {
+            markdown,
+            md_path,
+            mrz_data,
+            tier1,
+            ocr: ocr_result,
+        })
     }
 
     /// Run the full pipeline on a local image/PDF. Writes `<input>.md` and
@@ -538,15 +579,17 @@ impl Pipeline {
     /// An OCR failure is an `Err`; an LLM-inferer failure is *not* — it
     /// degrades to `llm_error: Some(..)` with the OCR Markdown still returned.
     pub async fn process_document(&self, input: &Path) -> Result<PipelineResult, PipelineError> {
-        let (markdown, md_path, mrz_data, tier1) = self.ocr_and_tier1(input).await?;
-        let mut json_path = md_path.with_extension("json");
+        let stage = self.ocr_and_tier1(input).await?;
+        let mut json_path = stage.md_path.with_extension("json");
 
         // Tier 2: semantic JSON extraction via the in-process LLM inferer,
         // used only when Tier 1 found no checksum-valid MRZ.
-        let (extracted, extracted_v2, method, llm_error) = if let Some((value, v2)) = tier1 {
+        let (extracted, mut extracted_v2, method, llm_error) = if let Some((value, v2)) =
+            stage.tier1
+        {
             (Some(value), Some(v2), Method::MrzDeterministic, None)
         } else {
-            match self.extract_via_inferer(&markdown).await {
+            match self.extract_via_inferer(&stage.markdown).await {
                 Ok(extraction) => {
                     let v2 = lift_tier2_extraction(&extraction, self.infer.model_id());
                     let value = serde_json::to_value(&extraction).expect("Extraction serializes");
@@ -555,6 +598,14 @@ impl Pipeline {
                 Err(e) => (None, None, Method::Llm, Some(e)),
             }
         };
+
+        // Portrait geometry is independent of which tier produced the field
+        // extraction — it comes from the same OCR pass regardless — so it's
+        // filled in here, once, for whichever v2 record the branch above
+        // produced.
+        if let (Some(v2), Some(bbox)) = (extracted_v2.as_mut(), stage.ocr.portrait.as_ref()) {
+            v2.portrait = Some(portrait_image_ref(bbox));
+        }
 
         // Persist (encrypting if a key is configured) + append a PII-free audit
         // record. A persistence failure never invalidates the in-memory result.
@@ -567,7 +618,7 @@ impl Pipeline {
                     value,
                     extracted_v2.as_ref(),
                     method,
-                    mrz_data.as_ref(),
+                    stage.mrz_data.as_ref(),
                 )
                 .await
             {
@@ -578,14 +629,14 @@ impl Pipeline {
 
         self.metrics.record_document(method);
         Ok(PipelineResult {
-            markdown,
-            md_path,
+            markdown: stage.markdown,
+            md_path: stage.md_path,
             json_path,
             extracted,
             extracted_v2,
             llm_error,
             sidecar_stdout,
-            mrz: mrz_data,
+            mrz: stage.mrz_data,
             method,
         })
     }
@@ -597,19 +648,21 @@ impl Pipeline {
     ///
     /// [`process_document`]: Pipeline::process_document
     pub async fn process_document_stream(&self, input: &Path, tx: mpsc::Sender<ProcessEvent>) {
-        let (markdown, md_path, mrz_data, tier1) = match self.ocr_and_tier1(input).await {
+        let stage = match self.ocr_and_tier1(input).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = tx.send(ProcessEvent::Failed(e.to_string())).await;
                 return;
             }
         };
-        let mut json_path = md_path.with_extension("json");
+        let mut json_path = stage.md_path.with_extension("json");
 
-        let (extracted, extracted_v2, method, llm_error) = if let Some((value, v2)) = tier1 {
+        let (extracted, mut extracted_v2, method, llm_error) = if let Some((value, v2)) =
+            stage.tier1
+        {
             (Some(value), Some(v2), Method::MrzDeterministic, None)
         } else {
-            match self.extract_via_inferer_stream(&markdown, &tx).await {
+            match self.extract_via_inferer_stream(&stage.markdown, &tx).await {
                 Ok(extraction) => {
                     let v2 = lift_tier2_extraction(&extraction, self.infer.model_id());
                     let value = serde_json::to_value(&extraction).expect("Extraction serializes");
@@ -618,6 +671,11 @@ impl Pipeline {
                 Err(e) => (None, None, Method::Llm, Some(e)),
             }
         };
+
+        // See the matching comment in `process_document`.
+        if let (Some(v2), Some(bbox)) = (extracted_v2.as_mut(), stage.ocr.portrait.as_ref()) {
+            v2.portrait = Some(portrait_image_ref(bbox));
+        }
 
         let mut sidecar_stdout = String::new();
         if let Some(value) = &extracted {
@@ -628,7 +686,7 @@ impl Pipeline {
                     value,
                     extracted_v2.as_ref(),
                     method,
-                    mrz_data.as_ref(),
+                    stage.mrz_data.as_ref(),
                 )
                 .await
             {
@@ -639,14 +697,14 @@ impl Pipeline {
 
         let _ = tx
             .send(ProcessEvent::Done(Box::new(PipelineResult {
-                markdown,
-                md_path,
+                markdown: stage.markdown,
+                md_path: stage.md_path,
                 json_path,
                 extracted,
                 extracted_v2,
                 llm_error,
                 sidecar_stdout,
-                mrz: mrz_data,
+                mrz: stage.mrz_data,
                 method,
             })))
             .await;
@@ -654,6 +712,8 @@ impl Pipeline {
 
     /// Tier 2 streaming: like [`extract_via_inferer`] but forwards incremental
     /// text on `tx` as [`ProcessEvent::Delta`] while the model generates.
+    /// Normalizes the `Ok` value the same way and for the same reason —
+    /// see [`extract_via_inferer`]'s doc.
     ///
     /// [`extract_via_inferer`]: Pipeline::extract_via_inferer
     async fn extract_via_inferer_stream(
@@ -667,7 +727,11 @@ impl Pipeline {
             .acquire()
             .await
             .expect("llm_semaphore is never closed");
-        self.infer.extract_stream(markdown, tx).await
+        let mut result = self.infer.extract_stream(markdown, tx).await;
+        if let Ok(extraction) = &mut result {
+            synthpass_core::normalize::extraction(extraction);
+        }
+        result
     }
 
     /// Write the extraction JSON (encrypted to `<input>.json.enc` when a key is
@@ -787,6 +851,30 @@ fn extraction_v2_from_mrz(m: &mrz::MrzData) -> ExtractionV2 {
         },
     });
     v2
+}
+
+/// Convert an OCR-detected portrait box into the wire [`ImageRef`] (`u32`
+/// pixel coordinates). `as u32` is a saturating cast (no UB on out-of-range
+/// floats since Rust 1.45), so a pathological negative or huge component
+/// degrades to `0`/`u32::MAX` rather than wrapping — the clamp available at
+/// this layer. `synthpass-ocr`'s portrait heuristic already guarantees the
+/// box sits inside the real image's pixel grid (its search space is built
+/// directly from the decoded image's own `width()`/`height()`), so there is
+/// no independent image-bounds figure to clamp against here without
+/// re-decoding the image a second time just to re-derive a bound the
+/// producing crate already enforced.
+///
+/// **VISION.md §2 permanent non-goal**: this is a crop-coordinate conversion
+/// only, never face recognition or biometric matching. The box says *where*
+/// a photo-shaped, text-free region was found by layout heuristic; it says
+/// nothing about whether a face is actually present there.
+fn portrait_image_ref(bbox: &BBox) -> ImageRef {
+    ImageRef {
+        x: bbox.x.max(0.0) as u32,
+        y: bbox.y.max(0.0) as u32,
+        width: bbox.w.max(0.0) as u32,
+        height: bbox.h.max(0.0) as u32,
+    }
 }
 
 /// Lift a Tier-2 v1 [`Extraction`] into [`ExtractionV2`], stamping the real

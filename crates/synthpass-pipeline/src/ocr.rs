@@ -25,10 +25,80 @@ use std::path::Path;
 #[cfg(not(feature = "ocr-native-rust"))]
 compile_error!("synthpass-pipeline requires the `ocr-native-rust` feature");
 
+/// Axis-aligned bounding box in source-image pixel coordinates (`x`/`y` =
+/// top-left corner, `w`/`h` = extent), plain `f32`s. **Pipeline-owned, not a
+/// re-export of `synthpass_ocr::geometry::BBox`** — `synthpass-ocr` is only a
+/// dependency of this crate behind the optional `ocr-native-rust` feature
+/// (see this crate's `Cargo.toml`), so any of its types leaking into
+/// [`OcrEngine`]'s public signature would make every other feature
+/// combination (an out-of-tree `OcrEngine` impl with `ocr-native-rust` off)
+/// fail to compile. [`RustOcrEngine`]'s `recognize_detailed` override is the
+/// one place a `synthpass_ocr::geometry::BBox` is converted into this type —
+/// see its body.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BBox {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Structured OCR output: recognized text plus the layout geometry
+/// `synthpass-ocr`'s `NativeOcr::recognize_detailed` can produce when the
+/// active engine supports it. **Pipeline-owned** — see [`BBox`]'s doc for why
+/// this can never contain a `synthpass-ocr` type.
+#[derive(Debug, Clone, Default)]
+pub struct OcrResult {
+    pub text: String,
+    /// The region scored as the MRZ zone by content-and-geometry heuristic,
+    /// if any scored high enough to be confident. Not yet consumed by the
+    /// pipeline (Tier 1 still finds the MRZ by pattern search over `text`,
+    /// unchanged) — carried here so a future caller doesn't need another
+    /// trait-widening round to get at it.
+    pub mrz_band: Option<BBox>,
+    /// The region scored as the ID photo. **Crop coordinates only** — VISION.md
+    /// §2's permanent non-goal applies here exactly as it does at the
+    /// [`Pipeline::process_document`](crate::Pipeline::process_document)
+    /// call site that consumes this field: no face recognition, no
+    /// biometric matching, ever — a bounding box is not a face.
+    pub portrait: Option<BBox>,
+    /// Rotation (degrees, clockwise) applied before recognition; `0` if the
+    /// engine didn't rotate (either because the page needed none, or because
+    /// the active engine doesn't support orientation detection at all).
+    pub rotation: u16,
+}
+
+impl OcrResult {
+    /// Wrap plain text with no geometry — the shape every engine that only
+    /// implements [`OcrEngine::to_markdown`] gets for free via
+    /// [`OcrEngine::recognize_detailed`]'s default body.
+    pub fn from_text(text: String) -> Self {
+        Self {
+            text,
+            mrz_band: None,
+            portrait: None,
+            rotation: 0,
+        }
+    }
+}
+
 /// Produces Markdown / plain text from a local image.
 #[async_trait]
 pub trait OcrEngine: Send + Sync {
     async fn to_markdown(&self, input: &Path) -> Result<String, PipelineError>;
+
+    /// [`to_markdown`](Self::to_markdown)'s richer sibling: same text, plus
+    /// layout geometry when the engine can produce it. **Additive, not
+    /// breaking**: the default body just wraps `to_markdown`'s output with
+    /// [`OcrResult::from_text`], so every existing [`OcrEngine`] impl —
+    /// in-tree or out-of-tree — keeps compiling and behaving exactly as
+    /// before without touching a line. Only [`RustOcrEngine`] overrides this;
+    /// see its impl for where `synthpass_ocr::geometry::BBox` gets converted
+    /// to this crate's own [`BBox`].
+    async fn recognize_detailed(&self, input: &Path) -> Result<OcrResult, PipelineError> {
+        Ok(OcrResult::from_text(self.to_markdown(input).await?))
+    }
+
     /// Short human-readable identity for logs.
     fn describe(&self) -> String;
 }
@@ -139,30 +209,68 @@ mod rust_ocr {
             .is_some_and(|e| matches!(e.as_str(), "heic" | "heif"))
     }
 
+    /// The HEIC/PDF rejection checks shared by [`OcrEngine::to_markdown`] and
+    /// [`OcrEngine::recognize_detailed`] below — pulled out so the two engine
+    /// entry points can never drift on which inputs they reject or why.
+    fn reject_unsupported_input(input: &Path) -> Result<(), PipelineError> {
+        if looks_like_heic(input) {
+            return Err(PipelineError::Ocr(
+                "HEIC/HEIF input is not yet supported — no permissively-licensed \
+                 pure-Rust decoder exists (the available ones are AGPL-3.0). Convert to \
+                 JPEG or PNG first."
+                    .into(),
+            ));
+        }
+        if !looks_like_image(input) {
+            return Err(PipelineError::Ocr(
+                "PDF input is not supported — synthpass is image-only as of v0.7.5. Convert \
+                 to an image first."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert `synthpass-ocr`'s owned geometry type into this crate's own
+    /// [`BBox`] — the one place a `synthpass_ocr::geometry::BBox` is named
+    /// anywhere in `synthpass-pipeline`, confined to this `ocr-native-rust`-gated
+    /// module so it never reaches [`OcrEngine`]'s public signature (see
+    /// [`BBox`]'s doc for why that boundary matters).
+    fn convert_bbox(b: synthpass_ocr::geometry::BBox) -> BBox {
+        BBox {
+            x: b.x,
+            y: b.y,
+            w: b.w,
+            h: b.h,
+        }
+    }
+
     #[async_trait]
     impl OcrEngine for RustOcrEngine {
         async fn to_markdown(&self, input: &Path) -> Result<String, PipelineError> {
-            if looks_like_heic(input) {
-                return Err(PipelineError::Ocr(
-                    "HEIC/HEIF input is not yet supported — no permissively-licensed \
-                     pure-Rust decoder exists (the available ones are AGPL-3.0). Convert to \
-                     JPEG or PNG first."
-                        .into(),
-                ));
-            }
-            if !looks_like_image(input) {
-                return Err(PipelineError::Ocr(
-                    "PDF input is not supported — synthpass is image-only as of v0.7.5. Convert \
-                     to an image first."
-                        .into(),
-                ));
-            }
+            reject_unsupported_input(input)?;
             let ocr = self.get_or_load().await.map_err(PipelineError::Ocr)?;
             let path = input.to_path_buf();
             tokio::task::spawn_blocking(move || ocr.recognize(&path))
                 .await
                 .map_err(|e| PipelineError::Ocr(format!("ocr task panicked: {e}")))?
                 .map_err(PipelineError::Ocr)
+        }
+
+        async fn recognize_detailed(&self, input: &Path) -> Result<OcrResult, PipelineError> {
+            reject_unsupported_input(input)?;
+            let ocr = self.get_or_load().await.map_err(PipelineError::Ocr)?;
+            let path = input.to_path_buf();
+            let page = tokio::task::spawn_blocking(move || ocr.recognize_detailed(&path))
+                .await
+                .map_err(|e| PipelineError::Ocr(format!("ocr task panicked: {e}")))?
+                .map_err(PipelineError::Ocr)?;
+            Ok(OcrResult {
+                text: page.text,
+                mrz_band: page.mrz_band.map(convert_bbox),
+                portrait: page.portrait.map(convert_bbox),
+                rotation: page.rotation,
+            })
         }
 
         fn describe(&self) -> String {
