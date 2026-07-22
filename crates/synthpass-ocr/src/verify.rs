@@ -10,20 +10,31 @@ include!("known_good_hashes.rs");
 /// [`Sha256MismatchError`] under this crate's established name.
 pub type VerifyError = Sha256MismatchError;
 
+/// The hash the detection model must have: `SYNTHPASS_OCR_DETECTION_SHA256` if
+/// set, else [`KNOWN_GOOD_SHA256_DETECTION`]. Public so the download path can
+/// check bytes *before* committing them to disk (see `download.rs`) using the
+/// same override rules this module's file-based checks apply.
+pub fn expected_detection_sha256() -> String {
+    std::env::var("SYNTHPASS_OCR_DETECTION_SHA256")
+        .unwrap_or_else(|_| KNOWN_GOOD_SHA256_DETECTION.into())
+}
+
+/// The hash the recognition model must have — see [`expected_detection_sha256`].
+pub fn expected_recognition_sha256() -> String {
+    std::env::var("SYNTHPASS_OCR_RECOGNITION_SHA256")
+        .unwrap_or_else(|_| KNOWN_GOOD_SHA256_RECOGNITION.into())
+}
+
 /// Verify `path` (the detection model) against `SYNTHPASS_OCR_DETECTION_SHA256` if
 /// set, else [`KNOWN_GOOD_SHA256_DETECTION`].
 pub fn verify_detection_model(path: &Path) -> Result<(), VerifyError> {
-    let expected = std::env::var("SYNTHPASS_OCR_DETECTION_SHA256")
-        .unwrap_or_else(|_| KNOWN_GOOD_SHA256_DETECTION.into());
-    synthpass_core::audit::verify_file_sha256(path, &expected)
+    synthpass_core::audit::verify_file_sha256(path, &expected_detection_sha256())
 }
 
 /// Verify `path` (the recognition model) against `SYNTHPASS_OCR_RECOGNITION_SHA256`
 /// if set, else [`KNOWN_GOOD_SHA256_RECOGNITION`].
 pub fn verify_recognition_model(path: &Path) -> Result<(), VerifyError> {
-    let expected = std::env::var("SYNTHPASS_OCR_RECOGNITION_SHA256")
-        .unwrap_or_else(|_| KNOWN_GOOD_SHA256_RECOGNITION.into());
-    synthpass_core::audit::verify_file_sha256(path, &expected)
+    synthpass_core::audit::verify_file_sha256(path, &expected_recognition_sha256())
 }
 
 /// Whether verification should be skipped for this run (`SYNTHPASS_OCR_MODEL_SKIP_VERIFY=1`).
