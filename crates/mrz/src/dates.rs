@@ -45,6 +45,29 @@ pub fn expand_date_with_pivot(yymmdd: &str, is_birth: bool, pivot_yy: u32) -> St
     )
 }
 
+/// Gregorian leap-year rule: divisible by 4, except century years, which must
+/// also be divisible by 400 (so 2000 is a leap year but 1900 is not).
+pub fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// Number of days in `month` of `year`; `0` for an out-of-range `month`
+/// (`0` or `> 12`) so callers get an always-false range rather than a panic.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
 /// A simple proleptic-Gregorian calendar date. Used as the "today" reference
 /// for [`crate::MrzData::validity`] and to measure days-until-expiry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +83,12 @@ impl Date {
         Self { year, month, day }
     }
 
-    /// Month and day fall within the (generous) calendar ranges.
+    /// Month and day fall within the true calendar range for `year` — Feb 30,
+    /// Feb 29 in a non-leap year, and April 31 are all rejected rather than
+    /// silently accepted the way a generous 1..=31 day check would.
     pub fn is_well_formed(self) -> bool {
-        (1..=12).contains(&self.month) && (1..=31).contains(&self.day)
+        (1..=12).contains(&self.month)
+            && (1..=days_in_month(self.year, self.month)).contains(&self.day)
     }
 
     /// Days since the Unix epoch (1970-01-01), proleptic Gregorian.
@@ -176,6 +202,7 @@ impl crate::MrzData {
 mod tests {
     use super::*;
     use crate::parse_td3;
+    use proptest::prelude::*;
 
     // ICAO 9303 part 4 specimen: DOB 1974-08-12, expiry 2012-04-15.
     const TD3_L1: &str = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
@@ -186,6 +213,59 @@ mod tests {
         assert_eq!(expand_date("740812", true), "1974-08-12");
         assert_eq!(expand_date("150101", true), "2015-01-01");
         assert_eq!(expand_date("301231", false), "2030-12-31");
+    }
+
+    #[test]
+    fn century_pivot_boundary() {
+        // Birth: yy == CURRENT_YY (26) stays in the 2000s; yy == CURRENT_YY+1
+        // (27) rolls back to the 1900s; yy == 99 is always 1900s.
+        assert_eq!(expand_date("260101", true), "2026-01-01");
+        assert_eq!(expand_date("270101", true), "1927-01-01");
+        assert_eq!(expand_date("990101", true), "1999-01-01");
+        // Expiry is always 20xx, regardless of yy.
+        assert_eq!(expand_date("270101", false), "2027-01-01");
+    }
+
+    #[test]
+    fn leap_year_rule() {
+        assert!(is_leap_year(2000));
+        assert!(!is_leap_year(1900));
+        assert!(is_leap_year(2024));
+        assert!(!is_leap_year(2023));
+    }
+
+    #[test]
+    fn is_well_formed_rejects_impossible_calendar_dates() {
+        assert!(Date::new(2024, 2, 29).is_well_formed());
+        assert!(!Date::new(2023, 2, 29).is_well_formed());
+        assert!(!Date::new(2023, 2, 30).is_well_formed());
+        assert!(!Date::new(2023, 4, 31).is_well_formed());
+        assert!(!Date::new(2023, 6, 31).is_well_formed());
+        assert!(!Date::new(2023, 11, 31).is_well_formed());
+        assert!(Date::new(2023, 12, 31).is_well_formed());
+        assert!(Date::new(2023, 1, 31).is_well_formed());
+        assert!(!Date::new(2023, 0, 10).is_well_formed());
+        assert!(!Date::new(2023, 13, 1).is_well_formed());
+        assert!(!Date::new(2023, 1, 0).is_well_formed());
+    }
+
+    proptest! {
+        /// A date `is_well_formed()` iff it round-trips through epoch days
+        /// unchanged: a genuinely valid calendar date maps to itself, while
+        /// an impossible one (Feb 30, Apr 31, ...) normalizes to a different
+        /// date under `to_epoch_days`/`from_epoch_days`'s civil-calendar math.
+        #[test]
+        fn is_well_formed_matches_epoch_day_round_trip(
+            year in 1900i32..=2100,
+            month in 1u32..=13,
+            day in 0u32..=32,
+        ) {
+            let d = Date::new(year, month, day);
+            prop_assert_eq!(
+                d.is_well_formed(),
+                Date::from_epoch_days(d.to_epoch_days()) == d
+            );
+        }
     }
 
     #[test]

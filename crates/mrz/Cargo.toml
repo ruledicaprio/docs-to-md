@@ -1,11 +1,11 @@
 [package]
 name = "mrz"
 # Decoupled from the workspace `1.1.0`: independent public-release line. 0.x
-# still signals documented gaps (MRV emission, document-number overflow) that
-# a 1.0 would imply are closed.
-version = "0.2.0"
+# still signals a documented gap (document-number overflow) that a 1.0 would
+# imply is closed.
+version = "0.3.0"
 edition.workspace = true
-description = "Zero-dependency ICAO 9303 Machine Readable Zone (MRZ) parser and check-digit validator for TD1/TD2/TD3 documents."
+description = "Zero-dependency ICAO 9303 Machine Readable Zone (MRZ) parser, emitter, and check-digit validator for TD1/TD2/TD3 and MRV-A/MRV-B (visa) documents."
 license = "MIT"
 repository = "https://github.com/ruledicaprio/SynthPass"
 readme = "README.md"

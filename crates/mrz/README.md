@@ -12,6 +12,8 @@ failed) the read.
 The core crate has **no runtime dependencies** and compiles to
 `wasm32-unknown-unknown` as readily as to native targets.
 
+**▶ [Try it in your browser](https://ruledicaprio.github.io/SynthPass/)** — live WASM MRZ validator.
+
 ## Supported formats
 
 | Format | Document                          | Layout            | Status |
@@ -19,11 +21,11 @@ The core crate has **no runtime dependencies** and compiles to
 | TD3    | Passports                         | 2 lines × 44      | ✅ parse + emit |
 | TD2    | Official travel documents / IDs   | 2 lines × 36      | ✅ parse + emit |
 | TD1    | ID cards                          | 3 lines × 30      | ✅ parse + emit |
-| MRV-A  | Visas (passport-book)             | 2 lines × 44      | ✅ parse |
-| MRV-B  | Visas (smaller)                   | 2 lines × 36      | ✅ parse |
+| MRV-A  | Visas (passport-book)             | 2 lines × 44      | ✅ parse + emit |
+| MRV-B  | Visas (smaller)                   | 2 lines × 36      | ✅ parse + emit |
 
-MRV emission and document-number overflow (numbers longer than the 9-character
-field) are known gaps tracked for a later release.
+Document-number overflow (numbers longer than the 9-character field) is a
+known gap tracked for a later release.
 
 ## Usage
 
@@ -31,7 +33,7 @@ Add it to `Cargo.toml`:
 
 ```toml
 [dependencies]
-mrz = "0.2"
+mrz = "0.3"
 ```
 
 ### Scan free-form OCR text

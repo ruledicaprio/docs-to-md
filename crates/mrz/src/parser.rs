@@ -405,6 +405,57 @@ fn repair_td1_line3(l: &str) -> String {
     fix_name_separator(&defiller(l))
 }
 
+/// MRV name/document-code line repair, shared shape by MRV-A (44 chars) and
+/// MRV-B (36 chars). Modeled on `repair_td3_line1`/`repair_td2_line1`: letterize
+/// the issuing-state field, fix the doc-code filler, defiller + fix the name
+/// separator. Neither `repair_positions` (range starts at index 2) nor
+/// `fix_doc_code` (only ever rewrites index 1) can touch index 0, so the
+/// leading `V` document code always survives repair unchanged — the caller's
+/// `l1.starts_with('V')` check after repair is exactly as strict as before.
+fn repair_mrv_line1(l: &str) -> String {
+    let l = fix_doc_code(&repair_positions(l, &[(2..5, letterize)]));
+    format!("{}{}", &l[0..5], fix_name_separator(&defiller(&l[5..])))
+}
+
+fn repair_mrv_a_line1(l: &str) -> String {
+    repair_mrv_line1(l)
+}
+
+fn repair_mrv_b_line1(l: &str) -> String {
+    repair_mrv_line1(l)
+}
+
+/// MRV-A line-2 repair: same geometry as TD3 through the expiry check digit,
+/// but positions 28..44 are free-form optional data with no check digit of
+/// its own — unlike `repair_td3_line2`, we must NOT digitize/defiller the
+/// tail as if it were a personal-number + composite check field, since that
+/// data is never checked and unconstrained.
+fn repair_mrv_a_line2(l: &str) -> String {
+    repair_positions(
+        l,
+        &[
+            (9..10, digitize),   // doc number check digit
+            (10..13, letterize), // nationality
+            (13..20, digitize),  // DOB + check digit
+            (21..28, digitize),  // expiry + check digit
+        ],
+    )
+}
+
+/// MRV-B line-2 repair: same geometry as TD2 through the expiry check digit;
+/// positions 28..36 are free-form optional data, left untouched.
+fn repair_mrv_b_line2(l: &str) -> String {
+    repair_positions(
+        l,
+        &[
+            (9..10, digitize),   // doc number check digit
+            (10..13, letterize), // nationality
+            (13..20, digitize),  // DOB + check digit
+            (21..28, digitize),  // expiry + check digit
+        ],
+    )
+}
+
 /// Scan free-form text (e.g. OCR output) for an MRZ and parse it.
 ///
 /// Tries TD3 (two 44-char lines starting with `P`), then TD1 (three 30-char
@@ -463,6 +514,81 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             for l2_raw in lines.iter().skip(i + 1).take(3) {
                 for l2 in variants(l2_raw, 44, repair_td3_line2) {
                     if let Ok(data) = parse_td3(&l1, &l2) {
+                        if let Some(valid) = consider(data) {
+                            return Ok(valid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MRV-B: a line starting with 'V' followed by a candidate line — or both
+    // 36-char lines merged into one ~68-76 char physical line. Tried before
+    // MRV-A: both share the 'V' document-code prefix (no length hint from the
+    // code itself), and `variants`'s padding tolerance (+14) is far more
+    // generous than its truncation tolerance (+4) — trying the *narrower*
+    // format first means a genuine MRV-B line never gets loosely padded up
+    // and misparsed as MRV-A before MRV-B gets a chance at its exact length.
+    for i in 0..lines.len() {
+        let merged = normalize_line(lines[i]);
+        if merged.starts_with('V') && (68..=76).contains(&merged.len()) && is_mrz_charset(&merged) {
+            let head = &merged[0..36];
+            let tail = &merged[36..];
+            for l1 in [repair_mrv_b_line1(head), head.to_string()] {
+                for l2 in variants(tail, 36, repair_mrv_b_line2) {
+                    if let Ok(data) = parse_mrv_b(&l1, &l2) {
+                        if let Some(valid) = consider(data) {
+                            return Ok(valid);
+                        }
+                    }
+                }
+            }
+        }
+
+        for l1 in variants(lines[i], 36, repair_mrv_b_line1) {
+            if !l1.starts_with('V') {
+                continue;
+            }
+            for l2_raw in lines.iter().skip(i + 1).take(3) {
+                for l2 in variants(l2_raw, 36, repair_mrv_b_line2) {
+                    if let Ok(data) = parse_mrv_b(&l1, &l2) {
+                        if let Some(valid) = consider(data) {
+                            return Ok(valid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MRV-A: a line starting with 'V' followed by a candidate line — or both
+    // 44-char lines merged into one ~84-92 char physical line. Disjoint from
+    // TD3 ('P'-prefixed) and TD1/TD2 (I/A/C-prefixed), so no cannibalization
+    // against those; see the MRV-B comment above for why MRV-B runs first.
+    for i in 0..lines.len() {
+        let merged = normalize_line(lines[i]);
+        if merged.starts_with('V') && (84..=92).contains(&merged.len()) && is_mrz_charset(&merged) {
+            let head = &merged[0..44];
+            let tail = &merged[44..];
+            for l1 in [repair_mrv_a_line1(head), head.to_string()] {
+                for l2 in variants(tail, 44, repair_mrv_a_line2) {
+                    if let Ok(data) = parse_mrv_a(&l1, &l2) {
+                        if let Some(valid) = consider(data) {
+                            return Ok(valid);
+                        }
+                    }
+                }
+            }
+        }
+
+        for l1 in variants(lines[i], 44, repair_mrv_a_line1) {
+            if !l1.starts_with('V') {
+                continue;
+            }
+            for l2_raw in lines.iter().skip(i + 1).take(3) {
+                for l2 in variants(l2_raw, 44, repair_mrv_a_line2) {
+                    if let Ok(data) = parse_mrv_a(&l1, &l2) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }

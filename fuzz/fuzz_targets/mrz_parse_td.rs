@@ -16,6 +16,8 @@ fuzz_target!(|data: &[u8]| {
     if lines.len() >= 2 {
         let _ = mrz::parse_td3(lines[0], lines[1]);
         let _ = mrz::parse_td2(lines[0], lines[1]);
+        let _ = mrz::parse_mrv_a(lines[0], lines[1]);
+        let _ = mrz::parse_mrv_b(lines[0], lines[1]);
     }
     if lines.len() >= 3 {
         let _ = mrz::parse_td1(lines[0], lines[1], lines[2]);

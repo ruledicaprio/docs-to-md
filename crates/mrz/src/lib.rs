@@ -34,7 +34,10 @@ mod parser;
 pub use checksum::{check_digit, verify};
 pub use countries::{code_for_name, country_name};
 pub use dates::{expand_date, expand_date_with_pivot, Date, DateValidity, CURRENT_YY};
-pub use emit::{format_td1, format_td2, format_td3, Td1Fields, Td2Fields, Td3Fields};
+pub use emit::{
+    format_mrv_a, format_mrv_b, format_td1, format_td2, format_td3, MrvAFields, MrvBFields,
+    Td1Fields, Td2Fields, Td3Fields,
+};
 pub use parser::{find_and_parse, parse_mrv_a, parse_mrv_b, parse_td1, parse_td2, parse_td3};
 
 /// Per-field check-digit verification results.
@@ -432,6 +435,44 @@ mod tests {
         let line1 = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
         let result = parse_mrv_a(line1, MRV_A_L2);
         assert!(matches!(result, Err(MrzError::BadDocumentCode(_))));
+    }
+
+    #[test]
+    fn mrv_a_found_in_ocr_text() {
+        let text = format!("## VISA\n\nnoise\n\n{MRV_A_L1}\n{MRV_A_L2}\n\nfooter");
+        let d = find_and_parse(&text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::MrvA);
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.nationality, "BRA");
+    }
+
+    #[test]
+    fn mrv_b_found_in_ocr_text() {
+        let text = format!("## VISA\n\nnoise\n\n{MRV_B_L1}\n{MRV_B_L2}\n\nfooter");
+        let d = find_and_parse(&text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::MrvB);
+        assert_eq!(d.nationality, "DEU");
+    }
+
+    #[test]
+    fn mrv_found_html_escaped_or_merged() {
+        // HTML-escaped fillers.
+        let escaped_l1 = MRV_A_L1.replace('<', "&lt;");
+        let escaped_l2 = MRV_A_L2.replace('<', "&lt;");
+        let text = format!("## VISA\n\n{escaped_l1}\n{escaped_l2}\n");
+        let d = find_and_parse(&text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::MrvA);
+
+        // Both lines merged onto one physical line with no separator at all
+        // (the ~88-char merged-line case, like docling's single-paragraph
+        // OCR output for a TD3 specimen).
+        let merged = format!("## VISA\n\n{MRV_A_L1}{MRV_A_L2}\n");
+        let d = find_and_parse(&merged).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::MrvA);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! panics — they say nothing about correctness (the existing unit tests in
 //! `src/lib.rs`/`src/parser.rs` already cover that against real specimens).
 
-use mrz::{find_and_parse, parse_td1, parse_td2, parse_td3};
+use mrz::{find_and_parse, parse_mrv_a, parse_mrv_b, parse_td1, parse_td2, parse_td3};
 use proptest::prelude::*;
 
 /// The real MRZ charset plus the OCR-noise characters this crate's own unit
@@ -64,6 +64,9 @@ fn mutated_specimen() -> impl Strategy<Value = String> {
         "ERIKSSON<<ANNA<MARIA<<<<<<<<<<".to_string(),
         "I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<".to_string(),
         "D231458907UTO7408122F1204159<<<<<<<6".to_string(),
+        "V<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<".to_string(),
+        "XK93054875BRA8502212F2703143R5T6U7V8W9<<<<<<".to_string(),
+        "L234567897DEU9201017F2706306QW12ER34".to_string(),
     ];
     (0..specimens.len()).prop_flat_map(move |i| {
         let base = specimens[i].clone();
@@ -139,5 +142,26 @@ proptest! {
         l2 in prop::collection::vec(mrz_ish_char(), 44).prop_map(|c| c.into_iter().collect::<String>()),
     ) {
         let _ = parse_td3(&l1, &l2);
+    }
+
+    /// `parse_mrv_a` must never panic regardless of line length or content.
+    #[test]
+    fn parse_mrv_a_never_panics(l1 in near_length_string(44), l2 in near_length_string(44)) {
+        let _ = parse_mrv_a(&l1, &l2);
+    }
+
+    /// `parse_mrv_b` must never panic regardless of line length or content.
+    #[test]
+    fn parse_mrv_b_never_panics(l1 in near_length_string(36), l2 in near_length_string(36)) {
+        let _ = parse_mrv_b(&l1, &l2);
+    }
+
+    /// Exact-length MRV-A inputs over the full MRZ-ish charset.
+    #[test]
+    fn parse_mrv_a_never_panics_exact_length(
+        l1 in prop::collection::vec(mrz_ish_char(), 44).prop_map(|c| c.into_iter().collect::<String>()),
+        l2 in prop::collection::vec(mrz_ish_char(), 44).prop_map(|c| c.into_iter().collect::<String>()),
+    ) {
+        let _ = parse_mrv_a(&l1, &l2);
     }
 }

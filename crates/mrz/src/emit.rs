@@ -1,11 +1,13 @@
-//! MRZ emission for all three ICAO 9303 formats — the deterministic inverse of
-//! [`crate::parse_td3`], [`crate::parse_td2`], and [`crate::parse_td1`].
+//! MRZ emission for all five ICAO 9303 formats — the deterministic inverse of
+//! [`crate::parse_td3`], [`crate::parse_td2`], [`crate::parse_td1`],
+//! [`crate::parse_mrv_a`], and [`crate::parse_mrv_b`].
 //!
-//! Given structured field values, [`format_td3`], [`format_td2`], and
-//! [`format_td1`] produce the ICAO-specified lines with every check digit
-//! computed via the same [`crate::check_digit`] math the parsers verify
-//! against. Feeding the output back through the matching `parse_*` function
-//! always yields a record with `valid() == true`.
+//! Given structured field values, [`format_td3`], [`format_td2`],
+//! [`format_td1`], [`format_mrv_a`], and [`format_mrv_b`] produce the
+//! ICAO-specified lines with every check digit computed via the same
+//! [`crate::check_digit`] math the parsers verify against. Feeding the output
+//! back through the matching `parse_*` function always yields a record with
+//! `valid() == true`.
 //!
 //! Field widths and offsets mirror the parsers exactly:
 //! - **TD3** (two 44-char lines): document code (2) + issuing country (3) +
@@ -24,6 +26,16 @@
 //!   nationality (3) + optional data 2 (11) + composite check (1) on line 2;
 //!   name field (30) on line 3. TD1 has no separate check digit over either
 //!   optional-data field.
+//! - **MRV-A** (two 44-char lines): document code (2, `"V"`) + issuing country
+//!   (3) + name field (39) on line 1; document number (9) + check (1) +
+//!   nationality (3) + date of birth (6) + check (1) + sex (1) + date of
+//!   expiry (6) + check (1) + optional data (16) on line 2. No personal-number
+//!   check digit and no composite check digit — MRVs don't have one.
+//! - **MRV-B** (two 36-char lines): document code (2, `"V"`) + issuing country
+//!   (3) + name field (31) on line 1; document number (9) + check (1) +
+//!   nationality (3) + date of birth (6) + check (1) + sex (1) + date of
+//!   expiry (6) + check (1) + optional data (8) on line 2. Same as MRV-A: no
+//!   personal-number check digit, no composite check digit.
 //!
 //! Input fields are taken in MRZ-native form (`YYMMDD` dates, uppercase
 //! `[A-Z0-9]`) rather than the parser's output form (ISO dates, spaced given
@@ -370,4 +382,170 @@ pub fn format_td1(fields: &Td1Fields) -> String {
     debug_assert_eq!(line3.len(), 30);
 
     format!("{line1}\n{line2}\n{line3}")
+}
+
+/// Raw MRV-A sub-fields, in MRZ-native form (see module docs).
+///
+/// `document_number` is limited to 9 characters (the field width); longer
+/// input is silently truncated. `date_of_birth` / `date_of_expiry` are
+/// `YYMMDD`, not ISO dates. MRV-A has no personal-number or composite check
+/// digit — `optional_data` is free-form data up to 16 characters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MrvAFields {
+    /// Document code, always `"V"` for a visa. Defaults to `"V"`.
+    pub document_code: String,
+    /// Issuing state (3-letter ICAO code).
+    pub issuing_country: String,
+    /// Document number, up to 9 characters.
+    pub document_number: String,
+    pub surname: String,
+    pub given_names: String,
+    /// Nationality (3-letter ICAO code).
+    pub nationality: String,
+    /// Date of birth as `YYMMDD`.
+    pub date_of_birth: String,
+    /// `"M"`, `"F"`, or `"X"` (unspecified — emitted as the filler `<`).
+    pub sex: String,
+    /// Date of expiry as `YYMMDD`.
+    pub date_of_expiry: String,
+    /// Optional free-form data, up to 16 characters. No check digit covers
+    /// this field — MRVs have neither a personal-number nor composite check.
+    pub optional_data: Option<String>,
+}
+
+impl Default for MrvAFields {
+    fn default() -> Self {
+        Self {
+            document_code: "V".to_string(),
+            issuing_country: String::new(),
+            document_number: String::new(),
+            surname: String::new(),
+            given_names: String::new(),
+            nationality: String::new(),
+            date_of_birth: String::new(),
+            sex: String::new(),
+            date_of_expiry: String::new(),
+            optional_data: None,
+        }
+    }
+}
+
+/// Emit an MRV-A (machine readable visa) MRZ: two 44-character lines joined
+/// by `\n`.
+///
+/// The document number, date-of-birth, and date-of-expiry check digits are
+/// computed from `fields` — the result always round-trips through
+/// [`crate::parse_mrv_a`] with `valid() == true` (see `tests/roundtrip.rs`).
+/// MRV-A has no personal-number check digit and no composite check digit.
+pub fn format_mrv_a(fields: &MrvAFields) -> String {
+    let doc_code = field(&fields.document_code, 2);
+    let issuing = field(&fields.issuing_country, 3);
+    let name = name_field(&fields.surname, &fields.given_names, 39);
+    let line1 = format!("{doc_code}{issuing}{name}");
+    debug_assert_eq!(line1.len(), 44);
+
+    let doc_num = field(&fields.document_number, 9);
+    let doc_num_check = digit_char(&doc_num);
+    let nationality = field(&fields.nationality, 3);
+    let dob = field(&fields.date_of_birth, 6);
+    let dob_check = digit_char(&dob);
+    let sex = match fields.sex.to_ascii_uppercase().as_str() {
+        "M" => 'M',
+        "F" => 'F',
+        _ => '<',
+    };
+    let expiry = field(&fields.date_of_expiry, 6);
+    let expiry_check = digit_char(&expiry);
+    let optional = field(fields.optional_data.as_deref().unwrap_or(""), 16);
+
+    let line2 = format!(
+        "{doc_num}{doc_num_check}{nationality}{dob}{dob_check}{sex}{expiry}{expiry_check}{optional}"
+    );
+    debug_assert_eq!(line2.len(), 44);
+
+    format!("{line1}\n{line2}")
+}
+
+/// Raw MRV-B sub-fields, in MRZ-native form (see module docs).
+///
+/// `document_number` is limited to 9 characters (the field width); longer
+/// input is silently truncated. `date_of_birth` / `date_of_expiry` are
+/// `YYMMDD`, not ISO dates. MRV-B has no personal-number or composite check
+/// digit — `optional_data` is free-form data up to 8 characters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MrvBFields {
+    /// Document code, always `"V"` for a visa. Defaults to `"V"`.
+    pub document_code: String,
+    /// Issuing state (3-letter ICAO code).
+    pub issuing_country: String,
+    /// Document number, up to 9 characters.
+    pub document_number: String,
+    pub surname: String,
+    pub given_names: String,
+    /// Nationality (3-letter ICAO code).
+    pub nationality: String,
+    /// Date of birth as `YYMMDD`.
+    pub date_of_birth: String,
+    /// `"M"`, `"F"`, or `"X"` (unspecified — emitted as the filler `<`).
+    pub sex: String,
+    /// Date of expiry as `YYMMDD`.
+    pub date_of_expiry: String,
+    /// Optional free-form data, up to 8 characters. No check digit covers
+    /// this field — MRVs have neither a personal-number nor composite check.
+    pub optional_data: Option<String>,
+}
+
+impl Default for MrvBFields {
+    fn default() -> Self {
+        Self {
+            document_code: "V".to_string(),
+            issuing_country: String::new(),
+            document_number: String::new(),
+            surname: String::new(),
+            given_names: String::new(),
+            nationality: String::new(),
+            date_of_birth: String::new(),
+            sex: String::new(),
+            date_of_expiry: String::new(),
+            optional_data: None,
+        }
+    }
+}
+
+/// Emit an MRV-B (machine readable visa) MRZ: two 36-character lines joined
+/// by `\n`.
+///
+/// The document number, date-of-birth, and date-of-expiry check digits are
+/// computed from `fields` — the result always round-trips through
+/// [`crate::parse_mrv_b`] with `valid() == true` (see `tests/roundtrip.rs`).
+/// MRV-B has no personal-number check digit and no composite check digit.
+pub fn format_mrv_b(fields: &MrvBFields) -> String {
+    let doc_code = field(&fields.document_code, 2);
+    let issuing = field(&fields.issuing_country, 3);
+    let name = name_field(&fields.surname, &fields.given_names, 31);
+    let line1 = format!("{doc_code}{issuing}{name}");
+    debug_assert_eq!(line1.len(), 36);
+
+    let doc_num = field(&fields.document_number, 9);
+    let doc_num_check = digit_char(&doc_num);
+    let nationality = field(&fields.nationality, 3);
+    let dob = field(&fields.date_of_birth, 6);
+    let dob_check = digit_char(&dob);
+    let sex = match fields.sex.to_ascii_uppercase().as_str() {
+        "M" => 'M',
+        "F" => 'F',
+        _ => '<',
+    };
+    let expiry = field(&fields.date_of_expiry, 6);
+    let expiry_check = digit_char(&expiry);
+    let optional = field(fields.optional_data.as_deref().unwrap_or(""), 8);
+
+    let line2 = format!(
+        "{doc_num}{doc_num_check}{nationality}{dob}{dob_check}{sex}{expiry}{expiry_check}{optional}"
+    );
+    debug_assert_eq!(line2.len(), 36);
+
+    format!("{line1}\n{line2}")
 }
