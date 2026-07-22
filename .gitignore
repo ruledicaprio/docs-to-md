@@ -30,3 +30,6 @@ web/pkg/
 # web/fetch-vendor.sh, never committed (mirrors the .rten model pattern)
 web/vendor/
 web/tessdata/eng.traineddata.gz
+
+# Generated synthetic documents (synthpass generate --out-dir out/)
+/out/

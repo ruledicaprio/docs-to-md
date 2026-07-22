@@ -39,12 +39,12 @@ mapping.*
 
 ## 📚 Contents
 
-- [Why it's built this way](#-why-its-built-this-way)
-- [How it works](#-how-it-works)
 - [See it work](#️-see-it-work)
 - [Quickstart](#-quickstart)
+- [Make a pass, then read it back](#-make-a-pass-then-read-it-back)
+- [How it works](#-how-it-works)
+- [Why it's built this way](#-why-its-built-this-way)
 - [Extraction: Tier 1 and Tier 2](#-extraction-tier-1-and-tier-2)
-- [Generation and benchmarking](#-generation-and-benchmarking)
 - [Accuracy, stated plainly](#-accuracy-stated-plainly)
 - [Configuration](#️-configuration)
 - [Licensing](#-licensing)
@@ -55,56 +55,9 @@ mapping.*
 - [Acknowledgments](#-acknowledgments)
 - [License](#-license)
 
-## 🎯 Why it's built this way
-
-Two principles drive every design decision, and they are non-negotiable:
-
-- **Deterministic before probabilistic.** A checksum that can *prove* an answer always runs
-  before a model that can only guess one. Given the same seed and parameters, generated output
-  is byte-identical — reproducibility is treated as a correctness property, not a convenience.
-- **Air-gapped or it does not ship.** There are zero network calls in the processing path. Model
-  and font fetches are explicit, checksum-verified bootstrap steps, never runtime behaviour. No
-  telemetry, no model CDN, no exceptions.
-
-Supporting invariants: everything runs **in one process** (no Docker, no Python, no sidecars);
-new dependencies must be pure Rust or justify themselves in writing; every PII-bearing value is
-zeroized on drop and the audit trail is SHA-256-only.
-
-Full reasoning in [docs/VISION.md](docs/VISION.md); engineering rationale and trade-offs in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## 🔀 How it works
-
-```mermaid
-flowchart LR
-    A["📷 ID photo"] --> B["🔎 Read the text<br/>(OCR)"]
-    B --> C{"Machine-readable<br/>zone found?"}
-    C -->|"Yes"| D["✅ Verify checksums<br/>instant, deterministic"]
-    C -->|"No"| E["🧠 Local LLM fallback<br/>reads the layout"]
-    D --> F["📦 Structured JSON"]
-    E --> F
-```
-
-Every document is checked against its own printed math first — that is what makes the green path
-instant and *provably* correct rather than probably right. The model only runs on documents that
-need it. Both stages run in the same process, on your machine, unchanged on Windows, macOS and
-Linux.
-
-The generation half closes the loop: synthetic documents carry labels that are correct by
-construction, so accuracy claims come from a harness rather than from vibes.
-
-```mermaid
-flowchart LR
-    GEN["🏭 synthpass-gen<br/>seeded, watermarked"] --> CORPUS["🏷️ labelled corpus"]
-    CORPUS --> BENCH["📊 synthpass-bench"]
-    BENCH --> GATE{"CI accuracy gate"}
-    GATE -->|"regression"| BLOCK["merge blocked"]
-    GATE -->|"pass"| MERGE["merge allowed"]
-```
-
 ## 🖼️ See it work
 
-<img src="samples/ocr_fixtures/Croatian_passport_data_page.jpg" alt="Croatian passport data page — public-domain specimen" width="380">
+<img src="samples/ocr_fixtures/Croatian_passport_data_page.jpg" alt="Croatian passport data page — public-domain specimen" width="300">
 
 ```
 $ synthpass Croatian_passport_data_page.jpg
@@ -228,6 +181,98 @@ build/test/cross-compile reference.
 | `synthpass verify-license` | Validate a `license.mlis` against the embedded key |
 | `synthpass decrypt <file>` | Decrypt output written with `SYNTHPASS_KEY` |
 
+## 🏭 Make a pass, then read it back
+
+SynthPass doesn't just read documents — it **mints its own**, so accuracy is graded against ground
+truth instead of vibes. `synthpass generate` renders synthetic TD3 passes in the same ICAO 9303
+format as a real passport data page, but every one is **unmistakably synthetic**: a mandatory
+"SYNTHETIC / SPECIMEN" watermark, a generic non-country template, and fictional seed-drawn
+identities — *enforced in code, never a copy of a real document*. Each render ships a `.json`
+sidecar with per-field ground-truth boxes and a checksum-valid MRZ built by `mrz::format_td3`, plus
+an optional capture-degradation pass (`clean` | `mobile` | `scanner` | `worn` | `border-kiosk`)
+that simulates real-world capture.
+
+<img src="docs/img/synthetic_pass_example.png" alt="A generated pass — watermarked SYNTHETIC / SPECIMEN, generic non-country template, fictional seed-drawn identity" width="300">
+
+Then read it **back through the exact same extraction pipeline** — the check digits and labels grade
+the OCR read, closing the loop:
+
+```powershell
+# 1. Mint one synthetic, watermarked, fully-labelled pass (same seed → byte-identical)
+cargo run -p synthpass-cli -- generate --count 1 --seed 42 --profile clean --out-dir out/
+#    → out/synthpass_42.png  (watermarked image)  +  out/synthpass_42.json  (per-field ground truth + MRZ)
+
+# 2. Read it back with the real pipeline — every ICAO check digit re-verified
+cargo run -p synthpass-cli -- out/synthpass_42.png
+```
+
+The `.json` sidecar is the ground truth the read is graded against — fictional by construction, and
+correct because SynthPass built the MRZ itself:
+
+```json
+{ "surname": "ESKANDARI", "given_names": "MAREN", "document_number": "FLLF2W13I",
+  "nationality": "BRA", "date_of_birth": "1975-05-18", "sex": "F", "date_of_expiry": "2034-04-18" }
+```
+
+Scale it up with `synthpass-bench` — it runs a whole generated corpus back through the *real*
+extraction pipeline and reports how much survives, the hit rate CI gates every PR on:
+
+```powershell
+cargo run -p synthpass-bench -- --count 100 --seed 1 --profile clean
+```
+
+Text renders with vendored OFL fonts (OCR-B and PT Sans, embedded by default; `--no-default-features`
+falls back to placeholder bars). Reports are generated, never hand-edited. Methodology in
+[docs/SYNTHPASS.md](docs/SYNTHPASS.md); the degraded-profile red-team corpus in
+[docs/ADVERSARIAL.md](docs/ADVERSARIAL.md).
+
+## 🔀 How it works
+
+```mermaid
+flowchart LR
+    A["📷 ID photo"] --> B["🔎 Read the text<br/>(OCR)"]
+    B --> C{"Machine-readable<br/>zone found?"}
+    C -->|"Yes"| D["✅ Verify checksums<br/>instant, deterministic"]
+    C -->|"No"| E["🧠 Local LLM fallback<br/>reads the layout"]
+    D --> F["📦 Structured JSON"]
+    E --> F
+```
+
+Every document is checked against its own printed math first — that is what makes the green path
+instant and *provably* correct rather than probably right. The model only runs on documents that
+need it. Both stages run in the same process, on your machine, unchanged on Windows, macOS and
+Linux.
+
+The generation half closes the loop: synthetic documents carry labels that are correct by
+construction, so accuracy claims come from a harness rather than from vibes.
+
+```mermaid
+flowchart LR
+    GEN["🏭 synthpass-gen<br/>seeded, watermarked"] --> CORPUS["🏷️ labelled corpus"]
+    CORPUS --> BENCH["📊 synthpass-bench"]
+    BENCH --> GATE{"CI accuracy gate"}
+    GATE -->|"regression"| BLOCK["merge blocked"]
+    GATE -->|"pass"| MERGE["merge allowed"]
+```
+
+## 🎯 Why it's built this way
+
+Two principles drive every design decision, and they are non-negotiable:
+
+- **Deterministic before probabilistic.** A checksum that can *prove* an answer always runs
+  before a model that can only guess one. Given the same seed and parameters, generated output
+  is byte-identical — reproducibility is treated as a correctness property, not a convenience.
+- **Air-gapped or it does not ship.** There are zero network calls in the processing path. Model
+  and font fetches are explicit, checksum-verified bootstrap steps, never runtime behaviour. No
+  telemetry, no model CDN, no exceptions.
+
+Supporting invariants: everything runs **in one process** (no Docker, no Python, no sidecars);
+new dependencies must be pure Rust or justify themselves in writing; every PII-bearing value is
+zeroized on drop and the audit trail is SHA-256-only.
+
+Full reasoning in [docs/VISION.md](docs/VISION.md); engineering rationale and trade-offs in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## 🔐 Extraction: Tier 1 and Tier 2
 
 **Tier 1 — deterministic.** The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser
@@ -252,33 +297,6 @@ This is explicitly a fallback, not a second source of truth: a 1.5B model readin
 layout it has never seen will not match a checksum for accuracy. The parity harness
 (`crates/synthpass-llm/tests/parity.rs`) exists to catch regressions in that fallback, not to
 promise perfection. That asymmetry is *why* Tier 1 exists and runs first on every document.
-
-## 🧪 Generation and benchmarking
-
-`synthpass generate` produces fictional, fully-labelled documents for testing and benchmarking —
-**no license required**, because no real PII is ever involved:
-
-```powershell
-cargo run -p synthpass-cli -- generate --count 3 --seed 1 --profile mobile --out-dir out/
-```
-
-Each document gets a deterministic identity (same seed → byte-identical output), a valid TD3 MRZ
-via `mrz::format_td3`, and a capture-degradation pass (`clean` | `mobile` | `scanner` | `worn` |
-`border-kiosk`) simulating real-world capture. Every render carries a **mandatory synthetic
-watermark and a generic, non-country template** — enforced in code, not merely documented — plus a
-`.json` sidecar with per-field ground-truth bounding boxes. Text renders with vendored OFL fonts
-(OCR-B and PT Sans, embedded by default; `--no-default-features` falls back to placeholder bars).
-
-`synthpass-bench` runs that generated corpus back through the *real* extraction pipeline and
-reports how much of it survives:
-
-```powershell
-cargo run -p synthpass-bench -- --count 100 --seed 1 --profile clean
-```
-
-Reports are generated, never hand-edited, and CI gates every PR on a hit-rate floor so a
-regression blocks the merge. See [docs/SYNTHPASS.md](docs/SYNTHPASS.md) for the methodology and
-[docs/ADVERSARIAL.md](docs/ADVERSARIAL.md) for the degraded-profile red-team corpus.
 
 ## 📊 Accuracy, stated plainly
 
