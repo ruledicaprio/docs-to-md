@@ -832,12 +832,18 @@ fn extraction_from_mrz(m: &mrz::MrzData) -> Extraction {
 /// zone plus exact per-check-digit results ride along in [`MrzBlock`] — the
 /// detail `From<Extraction>` has to guess at, filled in precisely here.
 fn extraction_v2_from_mrz(m: &mrz::MrzData) -> ExtractionV2 {
+    // `mrz::Format` is `#[non_exhaustive]` as of mrz 0.4.0, so a future ICAO
+    // format can appear here without a matching `MrzFormat` variant. Fall back
+    // to the same line-shape heuristic the v1→v2 lift uses rather than
+    // asserting a wrong variant: the geometry is recoverable from the zone
+    // itself even when the name for it isn't.
     let format = match m.format {
         mrz::Format::Td1 => MrzFormat::Td1,
         mrz::Format::Td2 => MrzFormat::Td2,
         mrz::Format::Td3 => MrzFormat::Td3,
         mrz::Format::MrvA => MrzFormat::MrvA,
         mrz::Format::MrvB => MrzFormat::MrvB,
+        _ => MrzFormat::guess_from_lines(&m.mrz_lines).unwrap_or(MrzFormat::Td3),
     };
     let mut v2 = ExtractionV2::from(extraction_from_mrz(m));
     v2.document.mrz_format = Some(format);
