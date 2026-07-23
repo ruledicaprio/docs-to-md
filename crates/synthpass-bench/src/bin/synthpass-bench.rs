@@ -36,9 +36,14 @@ enum ProfileChoice {
     Scanner,
     Worn,
     BorderKiosk,
+    Damaged,
     All,
 }
 
+// Deliberately excludes `Damaged`: the other profiles degrade legibility,
+// occlusion destroys data outright, and mixing it into `all` would move the
+// hit-rate number every existing gate is calibrated against. Ask for it by
+// name (`--profile damaged`) to measure recovery on its own.
 const ROUND_ROBIN: [ProfileChoice; 5] = [
     ProfileChoice::Clean,
     ProfileChoice::Mobile,
@@ -55,9 +60,10 @@ impl ProfileChoice {
             "scanner" => Ok(Self::Scanner),
             "worn" => Ok(Self::Worn),
             "border-kiosk" => Ok(Self::BorderKiosk),
+            "damaged" => Ok(Self::Damaged),
             "all" => Ok(Self::All),
             other => Err(format!(
-                "unknown profile '{other}' (valid: clean, mobile, scanner, worn, border-kiosk, all)"
+                "unknown profile '{other}' (valid: clean, mobile, scanner, worn, border-kiosk, damaged, all)"
             )),
         }
     }
@@ -69,6 +75,7 @@ impl ProfileChoice {
             Self::Scanner => "scanner",
             Self::Worn => "worn",
             Self::BorderKiosk => "border-kiosk",
+            Self::Damaged => "damaged",
             Self::All => "all",
         }
     }
@@ -82,6 +89,7 @@ impl ProfileChoice {
             Self::Scanner => Some(CaptureProfile::Scanner),
             Self::Worn => Some(CaptureProfile::Worn),
             Self::BorderKiosk => Some(CaptureProfile::BorderKiosk),
+            Self::Damaged => Some(CaptureProfile::Damaged),
         }
     }
 }

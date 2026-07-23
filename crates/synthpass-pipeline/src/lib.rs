@@ -858,7 +858,11 @@ fn extraction_v2_from_mrz(m: &mrz::MrzData) -> ExtractionV2 {
             composite: m.checks.composite,
         },
     });
-    v2.line1_integrity = Some(synthpass_core::fusion::check_line1_integrity(m));
+    // A field a deterministic check contradicts must not keep the confidence
+    // it had when nothing contradicted it — see `FieldConfidence::downgrade_flagged`.
+    let verdict = synthpass_core::fusion::check_line1_integrity(m);
+    v2.confidence.downgrade_flagged(&verdict);
+    v2.line1_integrity = Some(verdict);
     v2
 }
 

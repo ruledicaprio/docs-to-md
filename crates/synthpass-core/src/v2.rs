@@ -276,6 +276,59 @@ pub struct FieldConfidence {
 }
 
 impl FieldConfidence {
+    /// Lower any field named by a [`crate::fusion::Finding`] to
+    /// [`IMPLAUSIBLE`], the band already used for "present but structurally
+    /// wrong-looking".
+    ///
+    /// Without this a Tier-1 record can carry `nationality: 0.9`
+    /// ([`MRZ_STRUCTURAL`]) while its own `line1_integrity` verdict names
+    /// `nationality` as unrecognized — measured on a real capture where OCR
+    /// read `BIH` as `BTH`. `MRZ_STRUCTURAL` means "parsed at the right offset
+    /// and nothing contradicts it"; once a deterministic check *does*
+    /// contradict it, that is no longer true.
+    ///
+    /// Deliberately reuses the existing constants rather than computing a new
+    /// number. The scale is ordinal (see [`crate::fusion::Support`]); there is
+    /// no calibration curve behind these values and inventing arithmetic for
+    /// them would launder a judgement into a measurement.
+    pub fn downgrade_flagged(&mut self, verdict: &crate::fusion::Verdict) {
+        use crate::fusion::Finding;
+        let crate::fusion::Verdict::NeedsReview { reasons } = verdict else {
+            return;
+        };
+        for reason in reasons {
+            match reason {
+                Finding::UnrecognizedIssuingCountry { .. } => {
+                    self.issuing_country = IMPLAUSIBLE;
+                }
+                Finding::UnrecognizedNationality { .. } => {
+                    self.nationality = IMPLAUSIBLE;
+                }
+                // Neither side is proven and the finding cannot say which one
+                // is wrong, so both drop.
+                Finding::IssuingCountryNationalityMismatch { .. } => {
+                    self.issuing_country = IMPLAUSIBLE;
+                    self.nationality = IMPLAUSIBLE;
+                }
+                // The signature of a collapsed filler run: the whole name line
+                // landed in `surname`, so both name fields are suspect.
+                Finding::MissingNameSeparator { .. } => {
+                    self.surname = IMPLAUSIBLE;
+                    self.given_names = IMPLAUSIBLE;
+                }
+                Finding::NonAlphabeticName { field } => match field.as_str() {
+                    "surname" => self.surname = IMPLAUSIBLE,
+                    "given_names" => self.given_names = IMPLAUSIBLE,
+                    _ => {}
+                },
+                // Deliberately exhaustive, with no catch-all: a new `Finding`
+                // variant must not silently leave the field it flags sitting
+                // at full structural confidence, so adding one is a compile
+                // error here until it is mapped.
+            }
+        }
+    }
+
     /// Every field at the same score.
     pub fn uniform(score: f32) -> Self {
         Self {

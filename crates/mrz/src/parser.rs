@@ -771,5 +771,228 @@ pub fn find_and_parse_with(text: &str, opts: &ParseOptions) -> Result<MrzData, M
         }
     }
 
+    // Nothing validated on any ordinary variant. Before giving up, try the
+    // damaged-capture case (see `crate::repair`): a line that arrived *narrow*
+    // because the recognizer dropped a destroyed glyph instead of emitting a
+    // placeholder, so every field after the damage is shifted and no amount of
+    // lookalike repair can help. Runs only here, at the end, and only when
+    // some line already matched a format's shape — a document with no MRZ at
+    // all never pays for it.
+    if fallback.is_some() {
+        if let Some(data) = damaged_pass(&lines, opts) {
+            return Ok(data);
+        }
+    }
+
     fallback.ok_or(MrzError::NotFound)
+}
+
+/// A two-line format's parse entry point, as [`damaged_pass`]'s table stores it.
+type TwoLineParse = fn(&str, &str, &ParseOptions) -> Result<MrzData, MrzError>;
+
+/// One row of [`damaged_pass`]'s two-line format table: the ICAO line width,
+/// the line-1 document-code bytes that identify the format, the per-line
+/// lookalike repairs, and the parser. Adding a two-line format is a row here
+/// rather than another nested loop.
+type TwoLineFormat = (
+    usize,
+    &'static [u8],
+    fn(&str) -> String,
+    fn(&str) -> String,
+    TwoLineParse,
+);
+
+/// Upper bound on parse attempts across the whole damaged pass.
+///
+/// The pass is a search, and a search inside an OCR retry loop needs a ceiling
+/// rather than good intentions — the same reasoning as
+/// `checksum::MAX_DEFILL_PASSES`. Generous enough for one narrow line crossed
+/// against the ordinary variants of its neighbours; far below anything a user
+/// would notice.
+const MAX_DAMAGED_ATTEMPTS: usize = 200_000;
+
+/// Concrete candidate readings for a line that is **exactly one** character
+/// too narrow, with the missing character swept across every insertion point.
+///
+/// One is not an arbitrary cutoff. A single destroyed position admits one
+/// residue class, which the calendar constraint in [`accept_damaged`] can cut
+/// to a unique reading; two destroyed positions leave hundreds of readings that
+/// every check digit accepts (`tests/repair.rs` pins this), so no amount of
+/// searching can return an answer — it can only return a guess. Attempting it
+/// would cost 37² candidates per insertion point for a result this function is
+/// required to throw away.
+///
+/// Empty for any other line, which is what keeps this off the happy path.
+fn restored(raw: &str, target: usize, repair: fn(&str) -> String) -> Vec<String> {
+    let n = normalize_line(raw);
+    if n.len() + 1 != target || !is_mrz_charset(&n) {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for shaped in crate::repair::width_candidates(&n, target) {
+        if !shaped.contains(crate::repair::UNKNOWN) {
+            continue;
+        }
+        for concrete in crate::repair::concrete_fillings(&shaped) {
+            for form in [repair(&concrete), concrete] {
+                if seen.insert(form.clone()) {
+                    out.push(form);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A reading recovered from damage has to clear a higher bar than one read
+/// cleanly: every check digit valid **and** both dates real calendar dates.
+///
+/// The dates are load-bearing, not belt-and-braces. A check digit sees a field
+/// only mod 10 and the composite sees the same characters, so a single
+/// destroyed position admits an entire residue class that *both* digits
+/// accept — four readings on the card this was measured against. Three of them
+/// are not dates. Without this filter the pass would have to pick one, and a
+/// wrong pick is indistinguishable from a proof.
+fn accept_damaged(data: &MrzData) -> bool {
+    data.valid()
+        && data
+            .validity(crate::Date::new(2000, 1, 1))
+            .dates_well_formed
+}
+
+/// Try to recover a record in which exactly one line arrived too narrow.
+///
+/// Only one line is damaged in the captures this exists for (a punched hole, a
+/// finger over one end), so each shape below restores a single line and
+/// crosses it against the ordinary variants of the others — linear in the
+/// number of restored candidates rather than a product of three searches.
+///
+/// Returns `Some` only when the surviving readings all agree on the fields
+/// that matter. Several genuinely different readings means the MRZ cannot
+/// distinguish them, and the honest answer is the ordinary checksum-failed
+/// fallback, not the first candidate off the list.
+fn damaged_pass(lines: &[&str], opts: &ParseOptions) -> Option<MrzData> {
+    let mut budget = MAX_DAMAGED_ATTEMPTS;
+    let mut hits: Vec<MrzData> = Vec::new();
+
+    let record = |data: MrzData, hits: &mut Vec<MrzData>| {
+        if accept_damaged(&data) && !hits.iter().any(|h| h.mrz_lines == data.mrz_lines) {
+            hits.push(data);
+        }
+    };
+
+    // TD1: three consecutive lines, any one of them narrow.
+    for i in 0..lines.len().saturating_sub(2) {
+        let (a, b, c) = (lines[i], lines[i + 1], lines[i + 2]);
+        let shapes: [(Vec<String>, Vec<String>, Vec<String>); 3] = [
+            (
+                restored(a, 30, repair_td1_line1),
+                variants(b, 30, repair_td1_line2),
+                variants(c, 30, repair_td1_line3),
+            ),
+            (
+                variants(a, 30, repair_td1_line1),
+                restored(b, 30, repair_td1_line2),
+                variants(c, 30, repair_td1_line3),
+            ),
+            (
+                variants(a, 30, repair_td1_line1),
+                variants(b, 30, repair_td1_line2),
+                restored(c, 30, repair_td1_line3),
+            ),
+        ];
+        for (v1, v2, v3) in shapes {
+            for l1 in &v1 {
+                if !matches!(l1.as_bytes().first(), Some(b'I' | b'A' | b'C')) {
+                    continue;
+                }
+                for l2 in &v2 {
+                    for l3 in &v3 {
+                        if budget == 0 {
+                            return single(hits);
+                        }
+                        budget -= 1;
+                        if let Ok(data) = parse_td1_with(l1, l2, l3, opts) {
+                            record(data, &mut hits);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Two-line formats: TD3/MRV-A at 44, TD2/MRV-B at 36. Each entry is the
+    // line-1 prefix that identifies the format plus its parse function, so a
+    // new two-line format is one row rather than another nested loop.
+    let two_line: [TwoLineFormat; 4] = [
+        (44, b"P", repair_td3_line1, repair_td3_line2, parse_td3_with),
+        (
+            44,
+            b"V",
+            repair_mrv_a_line1,
+            repair_mrv_a_line2,
+            parse_mrv_a_with,
+        ),
+        (
+            36,
+            b"IAC",
+            repair_td2_line1,
+            repair_td2_line2,
+            parse_td2_with,
+        ),
+        (
+            36,
+            b"V",
+            repair_mrv_b_line1,
+            repair_mrv_b_line2,
+            parse_mrv_b_with,
+        ),
+    ];
+    for i in 0..lines.len().saturating_sub(1) {
+        let (a, b) = (lines[i], lines[i + 1]);
+        for (width, prefixes, rep1, rep2, parse) in two_line {
+            for (v1, v2) in [
+                (restored(a, width, rep1), variants(b, width, rep2)),
+                (variants(a, width, rep1), restored(b, width, rep2)),
+            ] {
+                for l1 in &v1 {
+                    if !l1.bytes().next().is_some_and(|c| prefixes.contains(&c)) {
+                        continue;
+                    }
+                    for l2 in &v2 {
+                        if budget == 0 {
+                            return single(hits);
+                        }
+                        budget -= 1;
+                        if let Ok(data) = parse(l1, l2, opts) {
+                            record(data, &mut hits);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    single(hits)
+}
+
+/// The one recovered reading, or `None` if the damage left more than one
+/// record standing. Readings that differ only in their raw zone but agree on
+/// every extracted field are the same answer reached twice (two insertion
+/// points inside one filler run, say) and count as one.
+fn single(mut hits: Vec<MrzData>) -> Option<MrzData> {
+    let first = hits.first()?.clone();
+    let same = |a: &MrzData, b: &MrzData| {
+        a.document_number == b.document_number
+            && a.date_of_birth == b.date_of_birth
+            && a.date_of_expiry == b.date_of_expiry
+            && a.surname == b.surname
+            && a.given_names == b.given_names
+            && a.nationality == b.nationality
+    };
+    if hits.iter().all(|h| same(h, &first)) {
+        return Some(hits.remove(0));
+    }
+    None
 }
