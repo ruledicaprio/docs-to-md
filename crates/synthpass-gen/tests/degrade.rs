@@ -73,3 +73,44 @@ fn single_degradation_applies_in_isolation() {
     assert_eq!(image.dimensions(), out.dimensions());
     assert_ne!(image.to_rgb8().into_raw(), out.to_rgb8().into_raw());
 }
+
+/// Occlusion is seed-independent by construction (see `degrade::occlusion`):
+/// the damaged region has to be the same pixels on every run, or the recovery
+/// regression that depends on it would only pass by luck.
+#[test]
+fn occlusion_is_identical_across_seeds() {
+    let image = sample_image();
+    let recipe = [Degradation::Occlusion {
+        x: 0.4,
+        y: 0.93,
+        w: 0.022,
+        h: 0.03,
+        disc: true,
+    }];
+
+    let out_a = apply(&image, &recipe, 1);
+    let out_b = apply(&image, &recipe, 9_999);
+
+    assert_eq!(out_a.to_rgb8().into_raw(), out_b.to_rgb8().into_raw());
+    assert_ne!(image.to_rgb8().into_raw(), out_a.to_rgb8().into_raw());
+    assert_eq!(image.dimensions(), out_a.dimensions());
+}
+
+/// A degenerate patch must be a no-op rather than a panic or a stray pixel —
+/// the clamping path in `degrade::occlusion`.
+#[test]
+fn a_zero_sized_occlusion_changes_nothing() {
+    let image = sample_image();
+    let out = apply(
+        &image,
+        &[Degradation::Occlusion {
+            x: 0.5,
+            y: 0.5,
+            w: 0.0,
+            h: 0.0,
+            disc: false,
+        }],
+        7,
+    );
+    assert_eq!(image.to_rgb8().into_raw(), out.to_rgb8().into_raw());
+}

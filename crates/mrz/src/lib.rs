@@ -41,6 +41,7 @@ mod countries;
 mod dates;
 mod emit;
 mod parser;
+mod repair;
 
 pub use blindspot::{blindspot, class_of, collisions, Blindspot, CLASSES};
 pub use checksum::{check_digit, verify};
@@ -55,6 +56,7 @@ pub use parser::{
     parse_mrv_b_with, parse_td1, parse_td1_with, parse_td2, parse_td2_with, parse_td3,
     parse_td3_with,
 };
+pub use repair::{solve_field, width_candidates, FieldKind, Resolution, MRZ_ALPHABET, UNKNOWN};
 
 /// Tunables for the parsing entry points.
 ///

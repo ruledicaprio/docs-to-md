@@ -31,7 +31,14 @@ impl Default for GenerateArgs {
     }
 }
 
-const VALID_PROFILES: &[&str] = &["mobile", "scanner", "worn", "border-kiosk", "clean"];
+const VALID_PROFILES: &[&str] = &[
+    "mobile",
+    "scanner",
+    "worn",
+    "border-kiosk",
+    "damaged",
+    "clean",
+];
 
 fn usage() {
     eprintln!("Usage: synthpass generate [--count N] [--seed N] [--profile NAME] [--out-dir DIR]");
@@ -109,6 +116,7 @@ fn degrade_placeholder(
         "scanner" => CaptureProfile::Scanner,
         "worn" => CaptureProfile::Worn,
         "border-kiosk" => CaptureProfile::BorderKiosk,
+        "damaged" => CaptureProfile::Damaged,
         _ => return image, // "clean" (validated in parse_args)
     };
     apply_profile(&image, capture_profile, seed)

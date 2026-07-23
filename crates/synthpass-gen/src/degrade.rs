@@ -46,6 +46,14 @@ pub enum CaptureProfile {
     Worn,
     /// Border-control kiosk camera: slight skew/rotation, harsh flash glare (localized brightness blowout), moderate compression blockiness.
     BorderKiosk,
+    /// Physically damaged document: a hole punched through the machine
+    /// readable zone, on top of ordinary handling wear.
+    ///
+    /// Its own profile rather than a step added to [`CaptureProfile::Worn`]:
+    /// occlusion destroys data outright instead of degrading its legibility,
+    /// so folding it into `Worn` would silently change what every existing
+    /// `Worn` benchmark number means.
+    Damaged,
 }
 
 /// One toggleable degradation primitive, so profiles are composed from parts
@@ -88,6 +96,23 @@ pub enum Degradation {
     JpegBlockiness {
         strength: f32,
     },
+    /// Physically destroys a patch of the document, the way a punched hole or
+    /// a finger over the lens does — the failure this exists to reproduce is
+    /// not a *misread* glyph but a *missing* one, which makes the recognizer
+    /// emit a line one character too narrow and shift every field after it.
+    ///
+    /// Coordinates are fractions of width/height (`0.0..=1.0`) so a recipe is
+    /// resolution-independent; `y` is where the MRZ band sits (~0.9 for a
+    /// passport data page, ~0.75 for a TD1 rear side). `disc` picks the shape:
+    /// a punched hole is round and lands mid-field, an occluding finger is a
+    /// bar across one end of a line.
+    Occlusion {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        disc: bool,
+    },
 }
 
 /// The ordered list of [`Degradation`]s a [`CaptureProfile`] applies, so a
@@ -119,6 +144,20 @@ pub fn profile_recipe(profile: CaptureProfile) -> Vec<Degradation> {
                 is_glare: true,
             },
             Degradation::JpegBlockiness { strength: 0.5 },
+        ],
+        // The hole sits at 40% across the MRZ band, i.e. inside the data
+        // fields rather than in the trailing filler run — filler damage is
+        // already survivable and would not exercise anything. Sized to take
+        // out roughly one glyph.
+        CaptureProfile::Damaged => vec![
+            Degradation::Contrast { factor: 0.85 },
+            Degradation::Occlusion {
+                x: 0.40,
+                y: 0.93,
+                w: 0.022,
+                h: 0.030,
+                disc: true,
+            },
         ],
     }
 }
@@ -152,7 +191,47 @@ fn apply_one(img: &RgbImage, degradation: Degradation, rng: &mut ChaCha8Rng) -> 
         }
         Degradation::Crease { count } => crease(img, count, rng),
         Degradation::JpegBlockiness { strength } => jpeg_blockiness(img, strength),
+        Degradation::Occlusion { x, y, w, h, disc } => occlusion(img, x, y, w, h, disc),
     }
+}
+
+/// Paint an opaque patch over the document.
+///
+/// Deliberately draws a flat mid-grey rather than sampling or blurring: a
+/// punched hole shows whatever is behind the card and a fingertip is its own
+/// solid object, and in both cases the glyph underneath is *gone*, not faint.
+/// Anything softer would leave a smudge the recognizer might still read, which
+/// is a different (and already-covered) failure mode.
+///
+/// Takes no `rng`: the patch is fully determined by its arguments, so a recipe
+/// that wants jitter asks for it explicitly rather than inheriting it. That
+/// keeps a fixture pinned to one exact damaged pixel region across runs — the
+/// property the regression test depends on.
+fn occlusion(img: &RgbImage, x: f32, y: f32, w: f32, h: f32, disc: bool) -> RgbImage {
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let (cx, cy) = (x.clamp(0.0, 1.0) * iw, y.clamp(0.0, 1.0) * ih);
+    let (rw, rh) = ((w.max(0.0) * iw) / 2.0, (h.max(0.0) * ih) / 2.0);
+    if rw < 0.5 || rh < 0.5 {
+        return img.clone();
+    }
+    let mut out = img.clone();
+    let x0 = (cx - rw).max(0.0) as u32;
+    let x1 = ((cx + rw).min(iw - 1.0)).max(0.0) as u32;
+    let y0 = (cy - rh).max(0.0) as u32;
+    let y1 = ((cy + rh).min(ih - 1.0)).max(0.0) as u32;
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            if disc {
+                let dx = (px as f32 - cx) / rw;
+                let dy = (py as f32 - cy) / rh;
+                if dx * dx + dy * dy > 1.0 {
+                    continue;
+                }
+            }
+            out.put_pixel(px, py, Rgb([128, 128, 128]));
+        }
+    }
+    out
 }
 
 fn gaussian_blur(img: &RgbImage, sigma: f32) -> RgbImage {

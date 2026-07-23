@@ -217,7 +217,7 @@ fn longest_filler_run(s: &str) -> Option<(usize, usize)> {
 /// Candidate alignments of a wrong-length line. OCR drops or hallucinates
 /// characters most often inside filler runs, so besides trimming/padding at
 /// the ends we also inflate/deflate the longest `<` run.
-fn fit_length(n: &str, target: usize) -> Vec<String> {
+pub(crate) fn fit_length(n: &str, target: usize) -> Vec<String> {
     use core::cmp::Ordering;
     match n.len().cmp(&target) {
         Ordering::Equal => vec![n.to_string()],

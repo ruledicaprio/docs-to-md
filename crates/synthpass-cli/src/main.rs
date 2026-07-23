@@ -189,6 +189,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match result.method {
                 synthpass_pipeline::Method::MrzDeterministic => {
                     println!("🔐 [Rust] ICAO 9303 checksums valid — deterministic MRZ extraction (LLM skipped)");
+                    // The check digits cover `document_number`, the two dates
+                    // and `personal_number` — not `document_type`,
+                    // `issuing_country`, `nationality` or the names. Printing
+                    // only "checksums valid" over a record whose own integrity
+                    // verdict flags one of those reads as an all-clear, so the
+                    // verdict goes to the terminal too, not just to the JSON.
+                    if let Some(synthpass_core::fusion::Verdict::NeedsReview { reasons }) = result
+                        .extracted_v2
+                        .as_ref()
+                        .and_then(|v2| v2.line1_integrity.as_ref())
+                    {
+                        println!(
+                            "⚠️ [Rust] ...but {} line-1 field(s) carry no check digit and look wrong — review before trusting:",
+                            reasons.len()
+                        );
+                        for reason in reasons {
+                            println!("[Rust]   • {reason:?}");
+                        }
+                    }
                     if let Some(extracted) = &result.extracted {
                         println!("{}", serde_json::to_string_pretty(extracted)?);
                     }
